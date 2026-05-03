@@ -13,5 +13,10 @@ python -m pip install -r requirements.txt
 # deactivate
 deactivate
 
+# For lunch the Projet
+py .\keypoint_extractor.py
 
-# For lunch the 
+# For install the dataset 
+ python dataset_pipeline.py --download --data-dir ./data
+# For explore dataset and creat train/test/val split 
+python dataset_pipeline.py --explore --data-dir ./data

@@ -1,6 +1,7 @@
 # Models (large binary files — download with --download-models)
 models/
-
+# Data base ASL Citizen
+data/
 # Virtual environment
 sign2speak_venv/
 venv/
