@@ -10,9 +10,9 @@
   "signs_count": 5,
   "features_per_frame": 298,
   "stats": {
-    "extracted": 1,
+    "extracted": 69,
     "skipped": 0,
-    "errors": 68
+    "errors": 0
   },
   "config": {
     "use_hands": true,

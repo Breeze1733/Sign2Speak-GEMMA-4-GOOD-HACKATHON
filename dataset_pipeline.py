@@ -331,6 +331,7 @@ def extract_keypoints(
     print(f"   Features/frame: {config.features_per_frame()}")
 
     stats = {'extracted': 0, 'skipped': 0, 'errors': 0}
+    global_timestamp_ms = 0  # Compteur global, ne se reset jamais entre les vidéos
 
     with KeypointExtractor(config) as extractor:
         for sign_idx, sign in enumerate(selected_signs):
@@ -372,8 +373,8 @@ def extract_keypoints(
                             ret, frame = cap.read()
                             if not ret:
                                 break
-                            timestamp_ms = int(frame_idx * (1000.0 / fps))
-                            keypoints = extractor.extract_and_flatten(frame, timestamp_ms)
+                            global_timestamp_ms += 33  # ~30 FPS, toujours croissant
+                            keypoints = extractor.extract_and_flatten(frame, global_timestamp_ms)
                             all_keypoints.append(keypoints)
                             frame_idx += 1
 
