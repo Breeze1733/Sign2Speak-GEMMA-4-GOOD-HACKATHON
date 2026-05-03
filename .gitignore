@@ -1,0 +1,33 @@
+# Models (large binary files — download with --download-models)
+models/
+
+# Virtual environment
+sign2speak_venv/
+venv/
+.venv/
+env/
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.egg-info/
+dist/
+build/
+.eggs/
+
+# Data / captures
+*.npy
+*.npz
+
+# IDE
+.vscode/
+.idea/
+*.sublime-project
+*.sublime-workspace
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
