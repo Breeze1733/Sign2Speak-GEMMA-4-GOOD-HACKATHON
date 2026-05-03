@@ -1,0 +1,31 @@
+{
+  "dataset": "ASL Citizen",
+  "signs": [
+    "HELLO",
+    "THANKYOU",
+    "PLEASE",
+    "SORRY",
+    "YES"
+  ],
+  "signs_count": 5,
+  "features_per_frame": 298,
+  "stats": {
+    "extracted": 1,
+    "skipped": 0,
+    "errors": 68
+  },
+  "config": {
+    "use_hands": true,
+    "use_pose": true,
+    "use_face": true,
+    "face_subset_only": true,
+    "normalize": true
+  },
+  "label_to_index": {
+    "HELLO": 0,
+    "THANKYOU": 1,
+    "PLEASE": 2,
+    "SORRY": 3,
+    "YES": 4
+  }
+}

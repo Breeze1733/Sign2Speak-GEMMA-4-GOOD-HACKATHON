@@ -163,8 +163,16 @@ def explore_dataset(data_dir: Path):
         if sign in available:
             matched.append((sign, data['gloss_counts'][sign]))
         else:
-            # Chercher variantes (ex: THANK-YOU vs THANKYOU, HELLO vs HELLO1)
-            variants = [g for g in available if sign in g or g in sign]
+            # Chercher uniquement les variantes numérotées (HELLO → HELLO1, HELLO2)
+            # et les variantes avec tirets/espaces (THANK-YOU → THANKYOU, THANK YOU)
+            import re
+            sign_clean = sign.replace("-", "").replace(" ", "")
+            variants = [
+                g for g in available
+                if re.fullmatch(rf"{re.escape(sign)}\d*", g)          # HELLO → HELLO1
+                or re.fullmatch(rf"{re.escape(sign_clean)}\d*", g)    # THANKYOU → THANKYOU1
+                or g.replace("-", "").replace(" ", "") == sign_clean   # THANK-YOU == THANKYOU
+            ]
             if variants:
                 best = max(variants, key=lambda g: data['gloss_counts'][g])
                 matched.append((best, data['gloss_counts'][best]))
@@ -225,8 +233,15 @@ def select_signs(data: dict, max_signs: int = 100) -> list[str]:
             selected.append(sign)
             seen.add(sign)
         else:
-            # Variantes
-            variants = [g for g in available if sign in g or g in sign]
+            # Variantes numérotées uniquement
+            import re
+            sign_clean = sign.replace("-", "").replace(" ", "")
+            variants = [
+                g for g in available
+                if re.fullmatch(rf"{re.escape(sign)}\d*", g)
+                or re.fullmatch(rf"{re.escape(sign_clean)}\d*", g)
+                or g.replace("-", "").replace(" ", "") == sign_clean
+            ]
             if variants:
                 best = max(variants, key=lambda g: data['gloss_counts'][g])
                 if best not in seen:
