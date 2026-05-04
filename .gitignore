@@ -1,5 +1,6 @@
 # Models (large binary files — download with --download-models)
 models/
+model/
 # Data base ASL Citizen
 data/
 # Virtual environment
