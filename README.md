@@ -25,8 +25,8 @@ python dataset_pipeline.py --explore --data-dir ./data
 
 # For lunch with 5 exemple 
 python dataset_pipeline.py --extract --data-dir ./data --output ./keypoints --max-signs 5 --max-videos-per-sign 5
-
-
+# For lunch keypoints with 50 exemples and all videos for eatch exemples 
+python dataset_pipeline.py --extract --data-dir ./data --output ./keypoints_v2 --max-signs 50 --max-videos-per-sign 999
 # For lunch the train data with LSTM
 python train_classifier.py --data ./keypoints --output ./model
 
