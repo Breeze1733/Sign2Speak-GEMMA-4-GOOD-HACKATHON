@@ -8,7 +8,7 @@ sign2speak_venv/
 venv/
 .venv/
 env/
-
+asl-signs/
 
 #Data Isolated Sign Language Recognition
 asl-signs.zip
