@@ -32,3 +32,11 @@ python train_classifier.py --data ./keypoints --output ./model
 
 # for lunch live model
 python live_test.py --model ./model
+
+
+
+
+----
+# For data already ready
+pip install kaggle
+kaggle competitions download -c asl-signs

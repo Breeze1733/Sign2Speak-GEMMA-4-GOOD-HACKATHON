@@ -1,0 +1,29 @@
+{
+  "n_classes": 7,
+  "n_features": 298,
+  "max_seq_len": 60,
+  "hidden_size": 128,
+  "num_layers": 2,
+  "label_to_idx": {
+    "D": 0,
+    "HELLO": 1,
+    "L": 2,
+    "MY": 3,
+    "NAME": 4,
+    "O": 5,
+    "U": 6
+  },
+  "idx_to_label": {
+    "0": "D",
+    "1": "HELLO",
+    "2": "L",
+    "3": "MY",
+    "4": "NAME",
+    "5": "O",
+    "6": "U"
+  },
+  "test_accuracy": 0.7368421052631579,
+  "top5_accuracy": 1.0,
+  "best_val_accuracy": 0.8947368421052632,
+  "epochs_trained": 34
+}

@@ -9,6 +9,9 @@ venv/
 .venv/
 env/
 
+
+#Data Isolated Sign Language Recognition
+asl-signs.zip
 # Python
 __pycache__/
 *.py[cod]
