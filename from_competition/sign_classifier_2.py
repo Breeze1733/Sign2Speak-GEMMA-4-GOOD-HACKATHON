@@ -9,9 +9,9 @@ Améliorations vs v1:
 - Mixed precision training (2x plus rapide sur RTX)
 
 Usage:
-    python sign_classifier_2.py train --data ./google_keypoints --output ./model_v2 --epochs 100
-    python sign_classifier_2.py live --model ./model_v2
-    python sign_classifier_2.py export --model ./model_v2
+    python sign_classifier.py train --data ./google_keypoints --output ./model_v2 --epochs 100
+    python sign_classifier.py live --model ./model_v2
+    python sign_classifier.py export --model ./model_v2
 """
 
 import argparse
@@ -72,6 +72,7 @@ class SignDataset(Dataset):
         self.max_seq_len = max_seq_len
         self.augment = augment
         self.samples = []
+        self.n_features = 298  # default, updated from first sample
 
         split_dir = data_dir / split
         if not split_dir.exists():
@@ -84,6 +85,12 @@ class SignDataset(Dataset):
             for npy_file in sorted(sign_dir.glob("*.npy")):
                 self.samples.append((npy_file, label_idx))
 
+        # Detect n_features from first sample
+        if self.samples:
+            sample = np.load(self.samples[0][0])
+            if sample.ndim == 2:
+                self.n_features = sample.shape[1]
+
     def __len__(self):
         return len(self.samples)
 
@@ -92,7 +99,7 @@ class SignDataset(Dataset):
         seq = np.load(path).astype(np.float32)
 
         if seq.ndim != 2 or seq.shape[0] == 0:
-            seq = np.zeros((self.max_seq_len, 298), dtype=np.float32)
+            seq = np.zeros((self.max_seq_len, self.n_features), dtype=np.float32)
 
         n_features = seq.shape[1]
 
@@ -485,7 +492,7 @@ def export_onnx(model, output_dir: Path, n_features: int):
     dummy_x = torch.randn(1, MAX_SEQ_LEN, n_features)
     dummy_mask = torch.ones(1, MAX_SEQ_LEN)
 
-    onnx_path = output_dir / "sign_classifier_2.onnx"
+    onnx_path = output_dir / "sign_classifier.onnx"
 
     try:
         torch.onnx.export(
@@ -508,7 +515,7 @@ def export_onnx(model, output_dir: Path, n_features: int):
 
 def export_litert(output_dir: Path):
     """Convertit ONNX → TFLite via onnx2tf ou ai_edge_torch."""
-    onnx_path = output_dir / "sign_classifier_2.onnx"
+    onnx_path = output_dir / "sign_classifier.onnx"
     if not onnx_path.exists():
         print("   ⚠️  ONNX non trouvé, skip LiteRT")
         return
@@ -537,7 +544,7 @@ def export_litert(output_dir: Path):
                   torch.ones(1, MAX_SEQ_LEN))
 
         edge_model = ai_edge_torch.convert(model, sample)
-        tflite_path = output_dir / "sign_classifier_2.tflite"
+        tflite_path = output_dir / "sign_classifier.tflite"
         edge_model.export(str(tflite_path))
         print(f"   ✅ {tflite_path} ({tflite_path.stat().st_size / 1e6:.1f} Mo)")
         return
@@ -563,7 +570,7 @@ def export_litert(output_dir: Path):
         converter._experimental_lower_tensor_list_ops = False
         tflite_model = converter.convert()
 
-        tflite_path = output_dir / "sign_classifier_2.tflite"
+        tflite_path = output_dir / "sign_classifier.tflite"
         with open(tflite_path, 'wb') as f:
             f.write(tflite_model)
         print(f"   ✅ {tflite_path} ({len(tflite_model) / 1e6:.1f} Mo)")

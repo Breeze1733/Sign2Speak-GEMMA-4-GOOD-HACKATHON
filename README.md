@@ -40,3 +40,12 @@ python live_test.py --model ./model
 # For data already ready
 pip install kaggle
 kaggle competitions download -c asl-signs
+
+
+
+
+
+
+# for lunch live_winner best model 
+
+python live_winner.py --model ./model_winner

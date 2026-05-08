@@ -10,6 +10,8 @@ venv/
 env/
 asl-signs/
 
+
+from_competition/winner_solution/
 #Data Isolated Sign Language Recognition
 asl-signs.zip
 # Python
