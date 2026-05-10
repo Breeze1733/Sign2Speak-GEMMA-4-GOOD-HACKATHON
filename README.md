@@ -35,7 +35,7 @@ python live_test.py --model ./model
 
 
 
-
+python live_winner.py --model ./model_winner
 ----
 # For data already ready
 pip install kaggle
