@@ -20,6 +20,8 @@ import json
 import time
 import urllib.request
 import urllib.error
+import queue
+import threading
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from collections import deque, Counter
@@ -147,7 +149,7 @@ def _draw_word_history(image, word_history):
 
 _OLLAMA_URL  = "http://localhost:11434/api/generate"
 _OLLAMA_MODEL = "gemma4:e2b"
-_FLUSH_TIMEOUT = 2.0   # secondes de silence avant d'envoyer les glosses
+_FLUSH_TIMEOUT = 3.0   # secondes de silence avant d'envoyer les glosses
 
 _SYSTEM_PROMPT = """\
 You are an ASL (American Sign Language) interpreter. You receive a sequence of ASL glosses \
@@ -238,6 +240,10 @@ class Gloss2Text:
 
         return list(self._glosses), self._sentence
 
+    @property
+    def is_loading(self) -> bool:
+        return self._pending is not None and not self._pending.done()
+
     def set_style(self, key: str):
         self.style = _STYLES.get(key, "friendly")
 
@@ -249,6 +255,52 @@ class Gloss2Text:
 
     def shutdown(self):
         self._executor.shutdown(wait=False)
+
+
+class TTSEngine:
+    """pyttsx3 dans un thread dédié — pyttsx3 n'est pas thread-safe."""
+    def __init__(self):
+        self._queue  = queue.Queue()
+        self._muted  = False
+        self._thread = threading.Thread(target=self._worker, daemon=True)
+        self._thread.start()
+
+    def _worker(self):
+        while True:
+            phrase = self._queue.get()
+            if phrase is None:
+                break
+            if not self._muted:
+                try:
+                    import pyttsx3
+                    engine = pyttsx3.init()
+                    engine.setProperty("rate", 150)
+                    engine.say(phrase)
+                    engine.runAndWait()
+                except Exception as e:
+                    print(f"[TTS] Erreur: {e}")
+
+    def speak(self, phrase: str):
+        # Vider la queue pour ne pas accumuler des phrases en retard
+        while not self._queue.empty():
+            try:
+                self._queue.get_nowait()
+            except queue.Empty:
+                break
+        self._queue.put(phrase)
+
+    def toggle_mute(self) -> bool:
+        self._muted = not self._muted
+        state = "muet" if self._muted else "actif"
+        print(f"[TTS] {state}")
+        return self._muted
+
+    @property
+    def muted(self) -> bool:
+        return self._muted
+
+    def shutdown(self):
+        self._queue.put(None)
 
 
 # =============================================================================
@@ -373,7 +425,7 @@ def preprocess_sequence(frames_543):
     return x[0]   # (T, 708)
 
 
-# =============================================================================
+# ============================================ =================================
 # Inférence (appelée dans un thread séparé)
 # =============================================================================
 
@@ -511,8 +563,10 @@ def run_live(model_dir: Path, threshold: float = 0.2):
     word_history       = deque(maxlen=7)   # historique des mots confirmés
     last_stable_label  = ""
 
-    # Gloss2Text
-    g2t = Gloss2Text()
+    # Gloss2Text + TTS
+    g2t            = Gloss2Text()
+    tts            = TTSEngine()
+    last_translated = ""
     top3               = []
     current_label      = ""
     current_conf       = 0.0
@@ -535,6 +589,7 @@ def run_live(model_dir: Path, threshold: float = 0.2):
     print(f"    1  → style Professional")
     print(f"    2  → style Friendly (défaut)")
     print(f"    3  → style Simple")
+    print(f"    m  → mute / unmute TTS")
     print(f"    c  → effacer buffer, glosses et traduction")
     print(f"    q  → quitter")
     print(f"{'─'*45}\n")
@@ -606,6 +661,11 @@ def run_live(model_dir: Path, threshold: float = 0.2):
 
             pending_glosses, translated = g2t.tick()
 
+            # TTS : parle dès qu'une nouvelle phrase arrive
+            if translated and translated != last_translated:
+                last_translated = translated
+                tts.speak(translated)
+
             # ── Dessin ───────────────────────────────────────────────────
             annotated = frame.copy()
             h, w = annotated.shape[:2]
@@ -658,9 +718,23 @@ def run_live(model_dir: Path, threshold: float = 0.2):
                 cv2.putText(annotated, display_txt, (8, h - 8),
                             cv2.FONT_HERSHEY_SIMPLEX, 0.65, (0, 255, 100), 2)
 
-            # Indicateur de style (coin bas-gauche)
+            # Indicateur de style + mute (coin bas-droit)
             cv2.putText(annotated, f"[{g2t.style[0].upper()}]", (w - 45, h - 8),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.45, (150, 150, 150), 1)
+            mute_label = "MUT" if tts.muted else "SPK"
+            mute_color = (60, 60, 60) if tts.muted else (0, 220, 120)
+            cv2.putText(annotated, mute_label, (w - 90, h - 8),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.45, mute_color, 1)
+
+            # Spinner Ollama en cours
+            if g2t.is_loading:
+                cx, cy  = w - 20, h - 60
+                r       = 10
+                angle   = (frame_idx * 9) % 360
+                cv2.ellipse(annotated, (cx, cy), (r, r), angle, 0, 270,
+                            (0, 200, 255), 2, cv2.LINE_AA)
+                cv2.putText(annotated, "AI", (cx - 7, cy + 4),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.3, (0, 200, 255), 1)
 
             # Top 3
             for i, (label, conf) in enumerate(top3):
@@ -680,10 +754,13 @@ def run_live(model_dir: Path, threshold: float = 0.2):
                 prediction_history.clear()
                 word_history.clear()
                 g2t.clear()
-                current_label     = ""
+                current_label   = ""
                 last_stable_label = ""
+                last_translated = ""
             elif key in (ord("1"), ord("2"), ord("3")):
                 g2t.set_style(chr(key))
+            elif key == ord("m"):
+                tts.toggle_mute()
 
             frame_idx += 1
 
@@ -691,6 +768,7 @@ def run_live(model_dir: Path, threshold: float = 0.2):
     cv2.destroyAllWindows()
     executor.shutdown(wait=False)
     g2t.shutdown()
+    tts.shutdown()
 
 
 def _softmax(x):
