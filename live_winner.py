@@ -10,8 +10,16 @@ Usage:
 """
 
 import argparse
+import warnings
+warnings.filterwarnings(
+    "ignore",
+    message=".*was passed an input with a mask.*",
+    category=UserWarning,
+)
 import json
 import time
+import urllib.request
+import urllib.error
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from collections import deque, Counter
@@ -131,6 +139,116 @@ def _draw_word_history(image, word_history):
         y = y0 + pad + 14 + (i + 1) * line_h - 4
         cv2.putText(image, word.upper(), (x0 + 8, y),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.58, color, thick)
+
+
+# =============================================================================
+# Gloss2Text — traduction ASL glose → phrase anglaise via Gemma 4 (Ollama)
+# =============================================================================
+
+_OLLAMA_URL  = "http://localhost:11434/api/generate"
+_OLLAMA_MODEL = "gemma4:e2b"
+_FLUSH_TIMEOUT = 2.0   # secondes de silence avant d'envoyer les glosses
+
+_SYSTEM_PROMPT = """\
+You are an ASL (American Sign Language) interpreter. You receive a sequence of ASL glosses \
+and must convert them into natural English sentences.
+
+ASL grammar is different from English:
+- ASL uses topic-comment structure (topic first)
+- Time indicators come first ("YESTERDAY I GO STORE" = "I went to the store yesterday")
+- No articles (a, the) or "to be" verbs in ASL
+- Questions use facial grammar, the word order may differ
+
+Rules:
+- Output ONLY the English sentence, nothing else
+- Keep it concise and natural
+- If glosses are unclear, make the most reasonable interpretation
+- Style: {style}
+
+Style descriptions:
+- professional: formal, clear, suitable for medical/business contexts
+- friendly: casual, warm, conversational
+- simple: short sentences, easy vocabulary, suitable for children\
+"""
+
+_STYLES = {"1": "professional", "2": "friendly", "3": "simple"}
+
+
+def _call_ollama(glosses: list, style: str) -> str:
+    gloss_str = " ".join(glosses)
+    system    = _SYSTEM_PROMPT.format(style=style)
+    payload   = json.dumps({
+        "model":  _OLLAMA_MODEL,
+        "prompt": f"ASL glosses: {gloss_str}",
+        "system": system,
+        "stream": False,
+    }).encode()
+    try:
+        req = urllib.request.Request(
+            _OLLAMA_URL,
+            data=payload,
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            return json.loads(resp.read()).get("response", "").strip()
+    except urllib.error.URLError:
+        return "[Ollama non disponible]"
+    except Exception as e:
+        return f"[Erreur: {e}]"
+
+
+class Gloss2Text:
+    def __init__(self):
+        self.style        = "friendly"
+        self._glosses     = []          # glosses en cours d'accumulation
+        self._last_time   = None        # horodatage du dernier gloss
+        self._sentence    = ""          # dernière phrase traduite
+        self._pending     = None        # future Ollama en cours
+        self._executor    = ThreadPoolExecutor(max_workers=1)
+
+    def push(self, gloss: str):
+        """Ajoute un gloss et réinitialise le timer de silence."""
+        if not self._glosses or self._glosses[-1] != gloss:
+            self._glosses.append(gloss)
+        self._last_time = time.time()
+
+    def tick(self) -> tuple:
+        """Appelé chaque frame. Retourne (glosses_actuels, phrase_traduite)."""
+        # Récupère la traduction si le thread est terminé
+        if self._pending is not None and self._pending.done():
+            result = self._pending.result()
+            if result:
+                self._sentence = result
+                print(f"  Gemma → {result}")
+            self._pending = None
+
+        # Flush si timeout expiré et pas de traduction en cours
+        if (self._glosses
+                and self._last_time is not None
+                and time.time() - self._last_time >= _FLUSH_TIMEOUT
+                and self._pending is None):
+            glosses_snapshot = list(self._glosses)
+            print(f"\nGloses : {' | '.join(glosses_snapshot)}  [{self.style}]")
+            self._pending   = self._executor.submit(
+                _call_ollama, glosses_snapshot, self.style
+            )
+            self._glosses   = []
+            self._last_time = None
+
+        return list(self._glosses), self._sentence
+
+    def set_style(self, key: str):
+        self.style = _STYLES.get(key, "friendly")
+
+    def clear(self):
+        self._glosses   = []
+        self._last_time = None
+        self._sentence  = ""
+        # n'annule pas le future en cours (thread daemon)
+
+    def shutdown(self):
+        self._executor.shutdown(wait=False)
 
 
 # =============================================================================
@@ -392,6 +510,9 @@ def run_live(model_dir: Path, threshold: float = 0.2):
     prediction_history = deque(maxlen=8)
     word_history       = deque(maxlen=7)   # historique des mots confirmés
     last_stable_label  = ""
+
+    # Gloss2Text
+    g2t = Gloss2Text()
     top3               = []
     current_label      = ""
     current_conf       = 0.0
@@ -408,7 +529,15 @@ def run_live(model_dir: Path, threshold: float = 0.2):
     cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
     cap.set(cv2.CAP_PROP_FPS, 30)
 
-    print(f"\n📸 'q' quitter | 'c' clear | Seuil: {threshold:.0%}")
+    print(f"\n{'─'*45}")
+    print(f"  Seuil de confiance : {threshold:.0%}")
+    print(f"  Touches :")
+    print(f"    1  → style Professional")
+    print(f"    2  → style Friendly (défaut)")
+    print(f"    3  → style Simple")
+    print(f"    c  → effacer buffer, glosses et traduction")
+    print(f"    q  → quitter")
+    print(f"{'─'*45}\n")
 
     frame_idx = 0
     fps_list  = deque(maxlen=30)
@@ -464,14 +593,18 @@ def run_live(model_dir: Path, threshold: float = 0.2):
                         _run_inference, model, features[np.newaxis, ...], idx_to_label
                     )
 
-            # ── Historique des mots ───────────────────────────────────────
+            # ── Historique des mots + accumulation glosses ───────────────
             if current_label and current_label != last_stable_label:
                 if last_stable_label:
                     word_history.append(last_stable_label)
+                    g2t.push(last_stable_label)
                 last_stable_label = current_label
             elif not current_label and last_stable_label:
                 word_history.append(last_stable_label)
+                g2t.push(last_stable_label)
                 last_stable_label = ""
+
+            pending_glosses, translated = g2t.tick()
 
             # ── Dessin ───────────────────────────────────────────────────
             annotated = frame.copy()
@@ -497,15 +630,37 @@ def run_live(model_dir: Path, threshold: float = 0.2):
                 cv2.putText(annotated, "...", (10, 85),
                             cv2.FONT_HERSHEY_SIMPLEX, 0.5, (200, 200, 0), 1)
 
-            # Prédiction courante
+            # Prédiction courante (remontée pour laisser place aux glosses/traduction)
             if current_label and current_conf >= threshold:
                 c = ((0, 255, 0)   if current_conf > 0.5
                      else (0, 255, 255) if current_conf > 0.3
                      else (0, 165, 255))
-                cv2.putText(annotated, current_label.upper(), (10, h - 50),
+                cv2.putText(annotated, current_label.upper(), (10, h - 105),
                             cv2.FONT_HERSHEY_SIMPLEX, 2.0, c, 4)
-                cv2.putText(annotated, f"{current_conf:.0%}", (10, h - 10),
+                cv2.putText(annotated, f"{current_conf:.0%}", (10, h - 70),
                             cv2.FONT_HERSHEY_SIMPLEX, 0.8, c, 2)
+
+            # Glosses accumulées (en attente d'envoi à Ollama)
+            if pending_glosses:
+                gloss_str = "  ".join(pending_glosses)
+                cv2.putText(annotated, gloss_str, (10, h - 42),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.65, (255, 255, 255), 2)
+
+            # Phrase traduite par Gemma 4
+            if translated:
+                # fond semi-transparent sur toute la largeur
+                overlay = annotated.copy()
+                cv2.rectangle(overlay, (0, h - 30), (w, h), (0, 0, 0), -1)
+                cv2.addWeighted(overlay, 0.5, annotated, 0.5, 0, annotated)
+                # texte tronqué si trop long
+                max_chars = w // 11
+                display_txt = translated if len(translated) <= max_chars else translated[:max_chars - 1] + "…"
+                cv2.putText(annotated, display_txt, (8, h - 8),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.65, (0, 255, 100), 2)
+
+            # Indicateur de style (coin bas-gauche)
+            cv2.putText(annotated, f"[{g2t.style[0].upper()}]", (w - 45, h - 8),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.45, (150, 150, 150), 1)
 
             # Top 3
             for i, (label, conf) in enumerate(top3):
@@ -524,14 +679,18 @@ def run_live(model_dir: Path, threshold: float = 0.2):
                 frame_buffer.clear()
                 prediction_history.clear()
                 word_history.clear()
+                g2t.clear()
                 current_label     = ""
                 last_stable_label = ""
+            elif key in (ord("1"), ord("2"), ord("3")):
+                g2t.set_style(chr(key))
 
             frame_idx += 1
 
     cap.release()
     cv2.destroyAllWindows()
     executor.shutdown(wait=False)
+    g2t.shutdown()
 
 
 def _softmax(x):
