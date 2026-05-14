@@ -21,6 +21,7 @@ import time
 import urllib.request
 import urllib.error
 import queue
+import subprocess
 import threading
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -257,8 +258,30 @@ class Gloss2Text:
         self._executor.shutdown(wait=False)
 
 
+_PIPER_MODEL = str(MODELS_DIR / "en_US-lessac-medium.onnx")
+_PIPER_RATE  = 22050   # Hz de sortie du modèle lessac-medium
+
+_PIPER_URLS = {
+    "en_US-lessac-medium.onnx":
+        "https://huggingface.co/rhasspy/piper-voices/resolve/v1.0.0/en/en_US/lessac/medium/en_US-lessac-medium.onnx",
+    "en_US-lessac-medium.onnx.json":
+        "https://huggingface.co/rhasspy/piper-voices/resolve/v1.0.0/en/en_US/lessac/medium/en_US-lessac-medium.onnx.json",
+}
+
+
+def _ensure_piper_model():
+    import urllib.request
+    MODELS_DIR.mkdir(parents=True, exist_ok=True)
+    for fname, url in _PIPER_URLS.items():
+        dest = MODELS_DIR / fname
+        if not dest.exists():
+            print(f"  Téléchargement Piper {fname} (~80 Mo)…")
+            urllib.request.urlretrieve(url, dest)
+            print(f"  ✓ {fname}")
+
+
 class TTSEngine:
-    """pyttsx3 dans un thread dédié — pyttsx3 n'est pas thread-safe."""
+    """Piper TTS (offline, voix neurale) dans un thread dédié."""
     def __init__(self):
         self._queue  = queue.Queue()
         self._muted  = False
@@ -266,17 +289,32 @@ class TTSEngine:
         self._thread.start()
 
     def _worker(self):
+        _ensure_piper_model()
+        try:
+            import sounddevice as sd
+        except ImportError:
+            print("[TTS] sounddevice manquant — pip install sounddevice")
+            return
+
         while True:
             phrase = self._queue.get()
             if phrase is None:
                 break
-            if not self._muted:
+            if not self._muted and phrase.strip():
                 try:
-                    import pyttsx3
-                    engine = pyttsx3.init()
-                    engine.setProperty("rate", 150)
-                    engine.say(phrase)
-                    engine.runAndWait()
+                    proc = subprocess.Popen(
+                        ["piper", "--model", _PIPER_MODEL, "--output-raw"],
+                        stdin=subprocess.PIPE,
+                        stdout=subprocess.PIPE,
+                        stderr=subprocess.DEVNULL,
+                    )
+                    raw, _ = proc.communicate(input=phrase.encode())
+                    if raw:
+                        audio = np.frombuffer(raw, dtype=np.int16).astype(np.float32) / 32768.0
+                        sd.play(audio, samplerate=_PIPER_RATE)
+                        sd.wait()
+                except FileNotFoundError:
+                    print("[TTS] Piper non trouvé — pip install piper-tts")
                 except Exception as e:
                     print(f"[TTS] Erreur: {e}")
 
