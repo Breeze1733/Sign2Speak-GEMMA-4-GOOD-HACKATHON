@@ -1,0 +1,7 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(dir \"c:\\\\Users\\\\Ludo\\\\dev\\\\Hackathon\\\\Sign2Speak-GEMMA-4-GOOD-HACKATHON\" /b)"
+    ]
+  }
+}
