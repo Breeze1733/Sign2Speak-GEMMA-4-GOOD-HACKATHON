@@ -12,8 +12,11 @@ import kotlinx.coroutines.asCoroutineDispatcher
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import java.util.concurrent.Executors
+
+// ─── App state ────────────────────────────────────────────────────────────────
 
 data class AppState(
     val currentSign: String = "",
@@ -26,142 +29,60 @@ data class AppState(
     val isTranslating: Boolean = false,
     val handDetected: Boolean = false,
     val fps: Float = 0f,
+    val detectedHands: List<DetectedHand> = emptyList(),
+    val faceDots: List<LandmarkPoint> = emptyList(),
+    val debugLogs: List<String> = emptyList(),
 )
+
+// ─── ViewModel ────────────────────────────────────────────────────────────────
 
 class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     private val _state = MutableStateFlow(AppState())
     val state: StateFlow<AppState> = _state.asStateFlow()
 
-    // Composants du pipeline (lazy pour ne pas bloquer la création du ViewModel)
-    private val signRecognizer: SignRecognizer by lazy {
-        SignRecognizer(application)
-    }
-    private val glossBuffer: GlossBuffer = GlossBuffer()
-    private val gloss2TextEngine: Gloss2TextEngine by lazy {
-        Gloss2TextEngine(application)
-    }
-    private val ttsEngine: TtsEngine by lazy {
-        TtsEngine(application)
-    }
+    private val signRecognizer: SignRecognizer by lazy { SignRecognizer(application) }
+    private val glossBuffer    = GlossBuffer()
+    private val gloss2Text: Gloss2TextEngine by lazy { Gloss2TextEngine(application) }
+    private val tts: TtsEngine by lazy { TtsEngine(application) }
 
-    // Dispatcher single-threaded pour la logique pipeline (glosses, état interne)
-    // Cela évite tout problème de concurrence sur lastStableLabel / glossBuffer
-    // sans avoir besoin de Mutex explicite.
-    private val pipelineExecutor = Executors.newSingleThreadExecutor()
+    // Single-threaded pipeline: MediaPipe VIDEO mode requires sequential calls
+    private val pipelineExecutor   = Executors.newSingleThreadExecutor()
     private val pipelineDispatcher = pipelineExecutor.asCoroutineDispatcher()
-    private val pipelineScope = CoroutineScope(SupervisorJob() + pipelineDispatcher)
+    private val pipelineScope      = CoroutineScope(SupervisorJob() + pipelineDispatcher)
 
-    // État interne (accédé uniquement depuis pipelineDispatcher)
-    private var lastStableLabel: String = ""
-    private var lastTranslatedSentence: String = ""
+    // Pipeline-only mutable state (never touched from other threads)
+    private var lastStableLabel       = ""
+    private var lastTranslatedSentence = ""
+    private var lastFrameTimeMs       = 0L
+    private val fpsSamples            = ArrayDeque<Float>(30)
+    private var frameCount            = 0
 
-    // FPS tracking (accédé uniquement depuis pipelineDispatcher)
-    private var lastFrameTimeMs: Long = 0L
-    private val fpsSamples = ArrayDeque<Float>(30)
+    // ── Public API ────────────────────────────────────────────────────────────
 
-    /**
-     * Appelée par CameraManager pour chaque frame (depuis l'executor CameraX).
-     * On dispatch immédiatement vers pipelineDispatcher pour la thread-safety.
-     */
     fun onFrameProcessed(
         handResult: HandLandmarkerResult?,
         faceResult: FaceLandmarkerResult?,
         timestampMs: Long,
     ) {
+        pipelineScope.launch { processFrame(handResult, faceResult, timestampMs) }
+    }
+
+    /** Force-flush current pending glosses to translation (skips the 3 s timeout). */
+    fun manualTranslate() {
         pipelineScope.launch {
-            processPipelineFrame(handResult, faceResult, timestampMs)
-        }
-    }
-
-    /** Pipeline principal — tourne sur pipelineDispatcher (single-threaded). */
-    private suspend fun processPipelineFrame(
-        handResult: HandLandmarkerResult?,
-        faceResult: FaceLandmarkerResult?,
-        timestampMs: Long,
-    ) {
-        // Calcul FPS
-        val now = System.currentTimeMillis()
-        if (lastFrameTimeMs > 0L) {
-            val dt = (now - lastFrameTimeMs).coerceAtLeast(1L)
-            val fps = 1000f / dt
-            fpsSamples.addLast(fps)
-            if (fpsSamples.size > 30) fpsSamples.removeFirst()
-        }
-        lastFrameTimeMs = now
-        val avgFps = if (fpsSamples.isNotEmpty()) fpsSamples.average().toFloat() else 0f
-
-        // Traitement via SignRecognizer (synchrone, déjà sur pipelineDispatcher)
-        val recognition = signRecognizer.processFrame(handResult, faceResult, timestampMs)
-
-        val hasHand    = recognition.hasHand
-        val currentSign = recognition.topLabel
-        val currentConf = recognition.topConf
-        val top3       = recognition.top3
-
-        // Logique d'accumulation des glosses (identique à live_winner.py)
-        if (currentSign.isNotEmpty() && currentSign != lastStableLabel) {
-            if (lastStableLabel.isNotEmpty()) {
-                glossBuffer.push(lastStableLabel)
-            }
-            lastStableLabel = currentSign
-        } else if (currentSign.isEmpty() && lastStableLabel.isNotEmpty()) {
-            glossBuffer.push(lastStableLabel)
-            lastStableLabel = ""
-        }
-
-        // Check GlossBuffer timeout
-        val flushedGlosses = glossBuffer.tick()
-        val pendingGlosses = glossBuffer.currentGlosses()
-
-        if (flushedGlosses != null && flushedGlosses.isNotEmpty()) {
-            // Lance la traduction dans un coroutine séparé (Dispatchers.Default)
-            // pour ne pas bloquer le pipeline
-            val style = _state.value.style
-            viewModelScope.launch(Dispatchers.Default) {
-                _state.value = _state.value.copy(isTranslating = true)
-                val sentence = gloss2TextEngine.translate(flushedGlosses, style)
-                onTranslationReady(sentence)
-            }
-        }
-
-        // Mise à jour de l'état (MutableStateFlow est thread-safe)
-        _state.value = _state.value.copy(
-            currentSign    = currentSign,
-            currentConf    = currentConf,
-            top3           = top3,
-            pendingGlosses = pendingGlosses,
-            handDetected   = hasHand,
-            fps            = avgFps,
-        )
-    }
-
-    /** Appelée lorsque la traduction Gemma est prête. */
-    private fun onTranslationReady(sentence: String) {
-        _state.value = _state.value.copy(
-            translatedSentence = sentence,
-            isTranslating      = false,
-        )
-        // TTS : parle seulement si nouvelle phrase et non muet
-        if (sentence.isNotBlank() && sentence != lastTranslatedSentence) {
-            lastTranslatedSentence = sentence
-            if (!_state.value.isMuted) {
-                ttsEngine.speak(sentence)
-            }
+            val glosses = glossBuffer.currentGlosses().also { glossBuffer.clear() }
+            if (glosses.isEmpty()) { log("TRANS: no glosses"); return@launch }
+            startTranslation(glosses)
         }
     }
 
     fun toggleMute() {
-        val newMuted = !_state.value.isMuted
-        _state.value = _state.value.copy(isMuted = newMuted)
-        if (newMuted) {
-            ttsEngine.stop()
-        }
+        _state.update { it.copy(isMuted = !it.isMuted) }
+        if (_state.value.isMuted) tts.stop()
     }
 
-    fun setStyle(style: String) {
-        _state.value = _state.value.copy(style = style)
-    }
+    fun setStyle(style: String) { _state.update { it.copy(style = style) } }
 
     fun clearBuffer() {
         pipelineScope.launch {
@@ -169,23 +90,103 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             glossBuffer.clear()
             lastStableLabel        = ""
             lastTranslatedSentence = ""
-            _state.value = _state.value.copy(
-                currentSign        = "",
-                currentConf        = 0f,
-                top3               = emptyList(),
-                pendingGlosses     = emptyList(),
-                translatedSentence = "",
-                isTranslating      = false,
-                handDetected       = false,
+            _state.update {
+                it.copy(
+                    currentSign = "", currentConf = 0f, top3 = emptyList(),
+                    pendingGlosses = emptyList(), translatedSentence = "",
+                    isTranslating = false, handDetected = false,
+                    detectedHands = emptyList(), faceDots = emptyList(),
+                )
+            }
+            log("Buffer cleared")
+        }
+    }
+
+    // ── Pipeline ──────────────────────────────────────────────────────────────
+
+    private fun processFrame(
+        handResult: HandLandmarkerResult?,
+        faceResult: FaceLandmarkerResult?,
+        timestampMs: Long,
+    ) {
+        // FPS
+        val now = System.currentTimeMillis()
+        if (lastFrameTimeMs > 0L) {
+            fpsSamples.addLast(1000f / (now - lastFrameTimeMs).coerceAtLeast(1L))
+            if (fpsSamples.size > 30) fpsSamples.removeFirst()
+        }
+        lastFrameTimeMs = now
+        val avgFps = if (fpsSamples.isNotEmpty()) fpsSamples.average().toFloat() else 0f
+        frameCount++
+
+        // Sign recognition (overlay extraction happens inside SignRecognizer)
+        val rec         = signRecognizer.processFrame(handResult, faceResult, timestampMs)
+        val hasHand     = rec.hasHand
+        val currentSign = rec.topLabel
+        val currentConf = rec.topConf
+
+        // Log every 60 frames or on sign change
+        if (frameCount % 60 == 0) {
+            log("Frame $frameCount | ${avgFps.toInt()} fps | hands: ${rec.detectedHands.size}")
+        }
+        if (currentSign.isNotEmpty() && currentSign != lastStableLabel) {
+            log("Sign: $currentSign (${(currentConf * 100).toInt()}%)")
+        }
+
+        // Gloss accumulation
+        if (currentSign.isNotEmpty() && currentSign != lastStableLabel) {
+            if (lastStableLabel.isNotEmpty()) { glossBuffer.push(lastStableLabel); log("Push: $lastStableLabel") }
+            lastStableLabel = currentSign
+        } else if (currentSign.isEmpty() && lastStableLabel.isNotEmpty()) {
+            glossBuffer.push(lastStableLabel); log("Push: $lastStableLabel")
+            lastStableLabel = ""
+        }
+
+        // Auto-flush after 3 s silence
+        glossBuffer.tick()?.takeIf { it.isNotEmpty() }?.let { startTranslation(it) }
+
+        _state.update {
+            it.copy(
+                currentSign    = currentSign,
+                currentConf    = currentConf,
+                top3           = rec.top3,
+                pendingGlosses = glossBuffer.currentGlosses(),
+                handDetected   = hasHand,
+                fps            = avgFps,
+                detectedHands  = rec.detectedHands,
+                faceDots       = rec.faceDots,
             )
         }
     }
+
+    private fun startTranslation(glosses: List<String>) {
+        val style = _state.value.style
+        log("→ Translate [${glosses.joinToString(" ")}] [$style]")
+        viewModelScope.launch(Dispatchers.Default) {
+            _state.update { it.copy(isTranslating = true) }
+            val sentence = gloss2Text.translate(glosses, style)
+            log("← Gemma: $sentence")
+            _state.update { it.copy(translatedSentence = sentence, isTranslating = false) }
+            if (sentence.isNotBlank() && sentence != lastTranslatedSentence) {
+                lastTranslatedSentence = sentence
+                if (!_state.value.isMuted) tts.speak(sentence)
+            }
+        }
+    }
+
+    // ── Debug log (thread-safe via StateFlow.update) ──────────────────────────
+
+    private fun log(msg: String) {
+        _state.update { s -> s.copy(debugLogs = (s.debugLogs + msg).takeLast(8)) }
+    }
+
+    // ── Lifecycle ─────────────────────────────────────────────────────────────
 
     override fun onCleared() {
         super.onCleared()
         pipelineExecutor.shutdown()
         signRecognizer.close()
-        ttsEngine.shutdown()
-        gloss2TextEngine.close()
+        tts.shutdown()
+        gloss2Text.close()
     }
 }

@@ -91,7 +91,7 @@ dependencies {
 
     // LiteRT — com.google.ai.edge.litert (bonus hackathon, remplace org.tensorflow:tensorflow-lite)
     implementation(libs.litert)
-    implementation(libs.litert.gpu.delegate)
+    implementation(libs.litert.gpu)
 
     // Coroutines
     implementation(libs.kotlinx.coroutines.android)

@@ -40,7 +40,7 @@ mediapipe-tasks-vision = { group = "com.google.mediapipe", name = "tasks-vision"
 mediapipe-tasks-genai = { group = "com.google.mediapipe", name = "tasks-genai", version.ref = "mediapipeGenai" }
 # LiteRT (bonus hackathon — com.google.ai.edge.litert, pas org.tensorflow)
 litert = { group = "com.google.ai.edge.litert", name = "litert", version.ref = "litert" }
-litert-gpu-delegate = { group = "com.google.ai.edge.litert", name = "litert-gpu-delegate", version.ref = "litert" }
+litert-gpu = { group = "com.google.ai.edge.litert", name = "litert-gpu", version.ref = "litert" }
 # Coroutines
 kotlinx-coroutines-android = { group = "org.jetbrains.kotlinx", name = "kotlinx-coroutines-android", version.ref = "coroutines" }
 # Lifecycle / ViewModel

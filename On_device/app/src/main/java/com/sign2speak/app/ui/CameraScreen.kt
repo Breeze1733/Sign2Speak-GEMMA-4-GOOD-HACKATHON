@@ -7,11 +7,14 @@ import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.RowScope
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -19,376 +22,454 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CircularProgressIndicator
-import androidx.compose.material3.FilledTonalButton
-import androidx.compose.material3.IconButton
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.rotate
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalLifecycleOwner
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
 import com.sign2speak.app.AppState
 import com.sign2speak.app.CameraManager
+import com.sign2speak.app.DetectedHand
+import com.sign2speak.app.LandmarkPoint
 import com.sign2speak.app.MainViewModel
 
-// ─── Couleurs Sign2Speak ──────────────────────────────────────────────────────
-private val ColorGreen     = Color(0xFF00E676)
-private val ColorYellow    = Color(0xFFFFD600)
-private val ColorOrange    = Color(0xFFFF6D00)
-private val ColorWhite     = Color.White
-private val ColorGray      = Color(0xFFBDBDBD)
-private val ColorDark      = Color(0xFF121212)
-private val ColorSemiBlack = Color(0x99000000)
+// ─── MediaPipe hand skeleton connections (21 keypoints) ──────────────────────
+private val HAND_CONNECTIONS = listOf(
+    0 to 1, 1 to 2, 2 to 3, 3 to 4,            // thumb
+    0 to 5, 5 to 6, 6 to 7, 7 to 8,             // index
+    0 to 9, 9 to 10, 10 to 11, 11 to 12,        // middle
+    0 to 13, 13 to 14, 14 to 15, 15 to 16,      // ring
+    0 to 17, 17 to 18, 18 to 19, 19 to 20,      // pinky
+    5 to 9, 9 to 13, 13 to 17,                   // palm
+)
 
-/**
- * CameraScreen — écran principal plein écran.
- *
- * Layout :
- *   - CameraX PreviewView en plein fond
- *   - Overlay transparent par-dessus avec toutes les infos
- *   - Contrôles en bas (mute + styles + clear)
- */
+// ─── Palette ──────────────────────────────────────────────────────────────────
+private val Green  = Color(0xFF00E676)
+private val Orange = Color(0xFFFF9800)
+private val Cyan   = Color(0xFF00B0FF)
+private val Yellow = Color(0xFFFFD600)
+private val White  = Color.White
+private val Gray   = Color(0xFFBDBDBD)
+private val Dark   = Color(0xFF121212)
+private val Scrim  = Color(0xB3000000)   // 70 % black
+
+// ─── Root screen ─────────────────────────────────────────────────────────────
+
 @Composable
 fun CameraScreen(viewModel: MainViewModel) {
     val state by viewModel.state.collectAsState()
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
 
-    // CameraManager — créé une seule fois, fermé au DisposableEffect
     val cameraManager = remember {
-        CameraManager(context) { handResult, faceResult, timestampMs ->
-            viewModel.onFrameProcessed(handResult, faceResult, timestampMs)
-        }
+        CameraManager(context) { hand, face, ts -> viewModel.onFrameProcessed(hand, face, ts) }
     }
-
     val previewView = remember { PreviewView(context) }
 
-    // Initialisation et démarrage de la caméra
     LaunchedEffect(Unit) {
         cameraManager.initialize()
         cameraManager.startCamera(lifecycleOwner, previewView)
     }
+    DisposableEffect(Unit) { onDispose { cameraManager.close() } }
 
-    // Nettoyage à la sortie du composable
-    DisposableEffect(Unit) {
-        onDispose {
-            cameraManager.close()
-        }
-    }
+    Box(modifier = Modifier.fillMaxSize().background(Dark)) {
 
-    Box(modifier = Modifier.fillMaxSize().background(ColorDark)) {
-        // ── Fond caméra ─────────────────────────────────────────────────────
-        AndroidView(
-            factory = { previewView },
-            modifier = Modifier.fillMaxSize()
-        )
+        // ── 1. Camera preview ────────────────────────────────────────────────
+        AndroidView(factory = { previewView }, modifier = Modifier.fillMaxSize())
 
-        // ── Overlay transparent ──────────────────────────────────────────────
+        // ── 2. Landmark skeleton overlay ─────────────────────────────────────
+        LandmarkOverlay(detectedHands = state.detectedHands, faceDots = state.faceDots)
+
+        // ── 3. HUD ───────────────────────────────────────────────────────────
         Box(modifier = Modifier.fillMaxSize()) {
 
-            // ── Top-left : FPS + Hand indicator ─────────────────────────────
-            TopLeftInfoPanel(state = state, modifier = Modifier.align(Alignment.TopStart))
-
-            // ── Top-right : Top 3 prédictions ────────────────────────────────
-            Top3Panel(state = state, modifier = Modifier.align(Alignment.TopEnd))
-
-            // ── Centre-bas : signe courant ────────────────────────────────────
-            CurrentSignDisplay(
-                state = state,
+            // Top row: status + top-3
+            Row(
                 modifier = Modifier
-                    .align(Alignment.BottomCenter)
-                    .padding(bottom = 160.dp)
-            )
+                    .fillMaxWidth()
+                    .align(Alignment.TopStart)
+                    .padding(8.dp),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.Top,
+            ) {
+                StatusPanel(state)
+                Top3Panel(state)
+            }
 
-            // ── Spinner IA en cours ───────────────────────────────────────────
+            // Debug log (below status panel)
+            if (state.debugLogs.isNotEmpty()) {
+                DebugLogPanel(
+                    logs = state.debugLogs,
+                    modifier = Modifier
+                        .align(Alignment.TopStart)
+                        .padding(start = 8.dp, top = 76.dp),
+                )
+            }
+
+            // Current sign (large, center-bottom)
+            if (state.currentSign.isNotEmpty()) {
+                CurrentSignDisplay(
+                    state = state,
+                    modifier = Modifier
+                        .align(Alignment.BottomCenter)
+                        .padding(bottom = 168.dp),
+                )
+            }
+
+            // AI spinner
             if (state.isTranslating) {
                 TranslatingSpinner(
                     modifier = Modifier
                         .align(Alignment.CenterEnd)
-                        .padding(end = 12.dp)
+                        .padding(end = 12.dp),
                 )
             }
 
-            // ── Bande basse : glosses + traduction ────────────────────────────
+            // Glosses + translation sentence
             BottomInfoPanel(
                 state = state,
                 modifier = Modifier
                     .align(Alignment.BottomCenter)
-                    .padding(bottom = 60.dp)
+                    .padding(bottom = 64.dp),
             )
 
-            // ── Barre de contrôles (tout en bas) ──────────────────────────────
+            // Control bar
             ControlBar(
-                state    = state,
-                onMute   = { viewModel.toggleMute() },
-                onStyle  = { viewModel.setStyle(it) },
-                onClear  = { viewModel.clearBuffer() },
-                modifier = Modifier.align(Alignment.BottomCenter)
+                state       = state,
+                onMute      = { viewModel.toggleMute() },
+                onStyle     = { viewModel.setStyle(it) },
+                onTranslate = { viewModel.manualTranslate() },
+                onClear     = { viewModel.clearBuffer() },
+                modifier    = Modifier.align(Alignment.BottomCenter),
             )
         }
     }
 }
 
-// ─── Composants ──────────────────────────────────────────────────────────────
+// ─── Landmark skeleton Canvas ─────────────────────────────────────────────────
 
 @Composable
-private fun TopLeftInfoPanel(state: AppState, modifier: Modifier) {
-    Column(
-        modifier = modifier
-            .padding(8.dp)
-            .background(ColorSemiBlack, RoundedCornerShape(8.dp))
-            .padding(horizontal = 10.dp, vertical = 6.dp)
-    ) {
-        Text(
-            text = "FPS: ${state.fps.toInt()}",
-            color = ColorGreen,
-            fontSize = 13.sp,
-            fontWeight = FontWeight.Medium,
-        )
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Box(
-                modifier = Modifier
-                    .size(8.dp)
-                    .clip(CircleShape)
-                    .background(if (state.handDetected) ColorGreen else Color.Red)
-            )
-            Spacer(Modifier.width(4.dp))
-            Text(
-                text = if (state.handDetected) "HAND" else "---",
-                color = if (state.handDetected) ColorGreen else ColorGray,
-                fontSize = 12.sp,
+private fun LandmarkOverlay(detectedHands: List<DetectedHand>, faceDots: List<LandmarkPoint>) {
+    Canvas(modifier = Modifier.fillMaxSize()) {
+        val w = size.width
+        val h = size.height
+
+        // Face: lip, nose, eye dots (cyan)
+        faceDots.forEach { pt ->
+            drawCircle(
+                color  = Cyan.copy(alpha = 0.75f),
+                radius = 3.dp.toPx(),
+                center = Offset((1f - pt.x) * w, pt.y * h),  // mirror x: front camera
             )
         }
-    }
-}
 
-@Composable
-private fun Top3Panel(state: AppState, modifier: Modifier) {
-    if (state.top3.isEmpty()) return
-    Column(
-        modifier = modifier
-            .padding(8.dp)
-            .background(ColorSemiBlack, RoundedCornerShape(8.dp))
-            .padding(horizontal = 10.dp, vertical = 6.dp),
-        horizontalAlignment = Alignment.End
-    ) {
-        state.top3.forEachIndexed { idx, (label, conf) ->
-            val fontSize = if (idx == 0) 15.sp else 13.sp
-            val color    = if (idx == 0) ColorWhite else ColorGray
-            val fw       = if (idx == 0) FontWeight.Bold else FontWeight.Normal
-            Text(
-                text = "${label.uppercase()}  ${(conf * 100).toInt()}%",
-                color = color,
-                fontSize = fontSize,
-                fontWeight = fw,
-            )
-        }
-    }
-}
+        // Hands: skeleton + joints
+        detectedHands.forEach { hand ->
+            val baseColor = if (hand.isLeft) Green else Orange
+            val pts = hand.points
 
-@Composable
-private fun CurrentSignDisplay(state: AppState, modifier: Modifier) {
-    if (state.currentSign.isEmpty()) return
+            // Bones
+            HAND_CONNECTIONS.forEach { (i, j) ->
+                if (i < pts.size && j < pts.size) {
+                    drawLine(
+                        color       = baseColor.copy(alpha = 0.65f),
+                        start       = Offset((1f - pts[i].x) * w, pts[i].y * h),
+                        end         = Offset((1f - pts[j].x) * w, pts[j].y * h),
+                        strokeWidth = 3.dp.toPx(),
+                    )
+                }
+            }
 
-    val signColor = when {
-        state.currentConf > 0.5f -> ColorGreen
-        state.currentConf > 0.3f -> ColorYellow
-        else                     -> ColorOrange
-    }
-
-    Column(
-        modifier = modifier,
-        horizontalAlignment = Alignment.CenterHorizontally
-    ) {
-        // Fond léger pour lisibilité
-        Box(
-            modifier = Modifier
-                .background(ColorSemiBlack, RoundedCornerShape(12.dp))
-                .padding(horizontal = 20.dp, vertical = 8.dp),
-            contentAlignment = Alignment.Center
-        ) {
-            Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                Text(
-                    text = state.currentSign.uppercase(),
-                    color = signColor,
-                    fontSize = 52.sp,
-                    fontWeight = FontWeight.ExtraBold,
-                    lineHeight = 56.sp,
-                )
-                Text(
-                    text = "${(state.currentConf * 100).toInt()}%",
-                    color = signColor.copy(alpha = 0.8f),
-                    fontSize = 18.sp,
-                    fontWeight = FontWeight.Medium,
-                )
+            // Joints: filled circle + white centre
+            pts.forEach { pt ->
+                val cx = (1f - pt.x) * w
+                val cy = pt.y * h
+                drawCircle(baseColor, radius = 6.dp.toPx(), center = Offset(cx, cy))
+                drawCircle(White.copy(alpha = 0.7f), radius = 2.5.dp.toPx(), center = Offset(cx, cy))
             }
         }
     }
 }
+
+// ─── Status panel (top-left) ──────────────────────────────────────────────────
+
+@Composable
+private fun StatusPanel(state: AppState) {
+    Column(
+        modifier = Modifier
+            .background(Scrim, RoundedCornerShape(8.dp))
+            .padding(horizontal = 10.dp, vertical = 6.dp),
+    ) {
+        Text("FPS: ${state.fps.toInt()}", color = Green, fontSize = 13.sp, fontWeight = FontWeight.Medium)
+
+        // Hand present indicator
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Box(
+                modifier = Modifier.size(8.dp).clip(CircleShape)
+                    .background(if (state.handDetected) Green else Color.Red)
+            )
+            Spacer(Modifier.width(4.dp))
+            Text(
+                text  = if (state.handDetected) "HAND" else "NO HAND",
+                color = if (state.handDetected) Green else Gray,
+                fontSize = 12.sp,
+            )
+        }
+
+        // Per-hand label
+        state.detectedHands.forEach { hand ->
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Box(
+                    modifier = Modifier.size(6.dp).clip(CircleShape)
+                        .background(if (hand.isLeft) Green else Orange)
+                )
+                Spacer(Modifier.width(4.dp))
+                Text(
+                    text = if (hand.isLeft) "LEFT  ✓" else "RIGHT",
+                    color = if (hand.isLeft) Green else Orange,
+                    fontSize = 11.sp,
+                    fontWeight = if (hand.isLeft) FontWeight.Bold else FontWeight.Normal,
+                )
+            }
+        }
+
+        // Reminder if no left hand
+        if (state.detectedHands.none { it.isLeft }) {
+            Text(
+                text     = "→ Show left hand",
+                color    = Yellow.copy(alpha = 0.85f),
+                fontSize = 10.sp,
+            )
+        }
+    }
+}
+
+// ─── Top-3 predictions (top-right) ───────────────────────────────────────────
+
+@Composable
+private fun Top3Panel(state: AppState) {
+    if (state.top3.isEmpty()) return
+    Column(
+        modifier = Modifier
+            .background(Scrim, RoundedCornerShape(8.dp))
+            .padding(horizontal = 10.dp, vertical = 6.dp),
+        horizontalAlignment = Alignment.End,
+    ) {
+        state.top3.forEachIndexed { i, (label, conf) ->
+            Text(
+                text       = "${label.uppercase()}  ${(conf * 100).toInt()}%",
+                color      = if (i == 0) White else Gray,
+                fontSize   = if (i == 0) 15.sp else 12.sp,
+                fontWeight = if (i == 0) FontWeight.Bold else FontWeight.Normal,
+            )
+        }
+    }
+}
+
+// ─── Debug log panel ─────────────────────────────────────────────────────────
+
+@Composable
+private fun DebugLogPanel(logs: List<String>, modifier: Modifier) {
+    Column(
+        modifier = modifier
+            .widthIn(max = 280.dp)
+            .background(Color(0xCC000000), RoundedCornerShape(6.dp))
+            .padding(horizontal = 8.dp, vertical = 4.dp),
+    ) {
+        logs.forEach { line ->
+            Text(
+                text       = line,
+                color      = Color(0xFF80DEEA),
+                fontSize   = 9.sp,
+                fontFamily = FontFamily.Monospace,
+                maxLines   = 1,
+                overflow   = TextOverflow.Ellipsis,
+            )
+        }
+    }
+}
+
+// ─── Current sign ─────────────────────────────────────────────────────────────
+
+@Composable
+private fun CurrentSignDisplay(state: AppState, modifier: Modifier) {
+    val color = when {
+        state.currentConf > 0.5f -> Green
+        state.currentConf > 0.3f -> Yellow
+        else                     -> Orange
+    }
+    Box(
+        modifier = modifier
+            .background(Scrim, RoundedCornerShape(12.dp))
+            .padding(horizontal = 24.dp, vertical = 10.dp),
+        contentAlignment = Alignment.Center,
+    ) {
+        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+            Text(
+                text       = state.currentSign.uppercase(),
+                color      = color,
+                fontSize   = 54.sp,
+                fontWeight = FontWeight.ExtraBold,
+            )
+            Text(
+                text     = "${(state.currentConf * 100).toInt()}%",
+                color    = color.copy(alpha = 0.8f),
+                fontSize = 18.sp,
+            )
+        }
+    }
+}
+
+// ─── AI spinner ───────────────────────────────────────────────────────────────
+
+@Composable
+private fun TranslatingSpinner(modifier: Modifier) {
+    val rot by rememberInfiniteTransition(label = "spin").animateFloat(
+        initialValue = 0f, targetValue = 360f,
+        animationSpec = infiniteRepeatable(tween(900, easing = LinearEasing), RepeatMode.Restart),
+        label = "rot",
+    )
+    Box(
+        modifier = modifier.size(36.dp).background(Scrim, CircleShape),
+        contentAlignment = Alignment.Center,
+    ) {
+        CircularProgressIndicator(Modifier.size(28.dp).rotate(rot), color = Cyan, strokeWidth = 3.dp)
+        Text("AI", color = Cyan, fontSize = 8.sp, fontWeight = FontWeight.Bold)
+    }
+}
+
+// ─── Bottom info panel (glosses + translation) ────────────────────────────────
 
 @Composable
 private fun BottomInfoPanel(state: AppState, modifier: Modifier) {
     Column(
-        modifier = modifier
-            .fillMaxWidth()
-            .padding(horizontal = 12.dp),
-        horizontalAlignment = Alignment.Start
+        modifier = modifier.fillMaxWidth().padding(horizontal = 12.dp),
+        horizontalAlignment = Alignment.Start,
     ) {
-        // Glosses en attente
         if (state.pendingGlosses.isNotEmpty()) {
             Text(
-                text = state.pendingGlosses.joinToString("  ").uppercase(),
-                color = ColorWhite,
-                fontSize = 16.sp,
+                text       = state.pendingGlosses.joinToString("  ").uppercase(),
+                color      = White,
+                fontSize   = 16.sp,
                 fontWeight = FontWeight.Medium,
-                maxLines = 2,
-                overflow = TextOverflow.Ellipsis,
-                modifier = Modifier
+                maxLines   = 2,
+                overflow   = TextOverflow.Ellipsis,
+                modifier   = Modifier
                     .fillMaxWidth()
-                    .background(ColorSemiBlack, RoundedCornerShape(6.dp))
-                    .padding(horizontal = 8.dp, vertical = 4.dp)
+                    .background(Scrim, RoundedCornerShape(6.dp))
+                    .padding(horizontal = 8.dp, vertical = 4.dp),
             )
             Spacer(Modifier.height(4.dp))
         }
-
-        // Phrase traduite
         if (state.translatedSentence.isNotEmpty()) {
             Text(
-                text = state.translatedSentence,
-                color = ColorGreen,
-                fontSize = 15.sp,
+                text       = state.translatedSentence,
+                color      = Green,
+                fontSize   = 15.sp,
                 fontWeight = FontWeight.SemiBold,
-                maxLines = 2,
-                overflow = TextOverflow.Ellipsis,
-                modifier = Modifier
+                maxLines   = 2,
+                overflow   = TextOverflow.Ellipsis,
+                modifier   = Modifier
                     .fillMaxWidth()
-                    .background(ColorSemiBlack, RoundedCornerShape(6.dp))
-                    .padding(horizontal = 8.dp, vertical = 4.dp)
+                    .background(Scrim, RoundedCornerShape(6.dp))
+                    .padding(horizontal = 8.dp, vertical = 4.dp),
             )
         }
     }
 }
 
-@Composable
-private fun TranslatingSpinner(modifier: Modifier) {
-    val infiniteTransition = rememberInfiniteTransition(label = "spinner")
-    val rotation by infiniteTransition.animateFloat(
-        initialValue = 0f,
-        targetValue  = 360f,
-        animationSpec = infiniteRepeatable(
-            animation = tween(1000, easing = LinearEasing),
-            repeatMode = RepeatMode.Restart
-        ),
-        label = "spin"
-    )
-    Box(
-        modifier = modifier
-            .size(36.dp)
-            .background(ColorSemiBlack, CircleShape),
-        contentAlignment = Alignment.Center
-    ) {
-        CircularProgressIndicator(
-            modifier = Modifier
-                .size(28.dp)
-                .rotate(rotation),
-            color = Color(0xFF00B0FF),
-            strokeWidth = 3.dp,
-        )
-        Text(
-            text = "AI",
-            color = Color(0xFF00B0FF),
-            fontSize = 8.sp,
-            fontWeight = FontWeight.Bold,
-        )
-    }
-}
+// ─── Control bar ─────────────────────────────────────────────────────────────
 
 @Composable
 private fun ControlBar(
-    state   : AppState,
-    onMute  : () -> Unit,
-    onStyle : (String) -> Unit,
-    onClear : () -> Unit,
-    modifier: Modifier,
+    state      : AppState,
+    onMute     : () -> Unit,
+    onStyle    : (String) -> Unit,
+    onTranslate: () -> Unit,
+    onClear    : () -> Unit,
+    modifier   : Modifier,
 ) {
     Row(
         modifier = modifier
             .fillMaxWidth()
-            .background(ColorSemiBlack)
-            .padding(horizontal = 16.dp, vertical = 8.dp),
-        horizontalArrangement = Arrangement.SpaceBetween,
-        verticalAlignment     = Alignment.CenterVertically,
+            .background(Scrim)
+            .padding(horizontal = 10.dp, vertical = 6.dp),
+        horizontalArrangement = Arrangement.spacedBy(6.dp),
+        verticalAlignment = Alignment.CenterVertically,
     ) {
-        // Bouton Mute
-        Button(
+        BarBtn(
+            label   = if (state.isMuted) "MUTE" else "SPK",
             onClick = onMute,
-            colors  = ButtonDefaults.buttonColors(
-                containerColor = if (state.isMuted) Color(0xFF424242) else Color(0xFF1B5E20)
-            ),
-            modifier = Modifier.width(56.dp)
-        ) {
-            Text(
-                text     = if (state.isMuted) "MUTE" else "SPK",
-                fontSize = 10.sp,
-                fontWeight = FontWeight.Bold,
-                color    = ColorWhite,
-                maxLines = 1,
+            color   = if (state.isMuted) Color(0xFF424242) else Color(0xFF1B5E20),
+        )
+
+        listOf("professional" to "P", "friendly" to "F", "simple" to "S").forEach { (key, lbl) ->
+            BarBtn(
+                label   = lbl,
+                onClick = { onStyle(key) },
+                color   = if (state.style == key) Color(0xFF1565C0) else Color(0xFF263238),
+                bold    = state.style == key,
             )
         }
 
-        // Boutons de style
-        val styles = listOf("professional" to "P", "friendly" to "F", "simple" to "S")
-        styles.forEach { (styleKey, label) ->
-            val isSelected = state.style == styleKey
-            FilledTonalButton(
-                onClick = { onStyle(styleKey) },
-                colors  = ButtonDefaults.filledTonalButtonColors(
-                    containerColor = if (isSelected) Color(0xFF1565C0) else Color(0xFF263238),
-                    contentColor   = ColorWhite,
-                ),
-                modifier = Modifier.width(48.dp)
-            ) {
-                Text(
-                    text       = label,
-                    fontSize   = 14.sp,
-                    fontWeight = if (isSelected) FontWeight.ExtraBold else FontWeight.Normal,
-                )
-            }
-        }
+        // Translate button — lit up when glosses are waiting
+        BarBtn(
+            label   = "TRANS",
+            onClick = onTranslate,
+            color   = if (state.pendingGlosses.isNotEmpty()) Color(0xFF6A1B9A) else Color(0xFF263238),
+            enabled = state.pendingGlosses.isNotEmpty() && !state.isTranslating,
+        )
 
-        // Bouton Clear
-        Button(
-            onClick = onClear,
-            colors  = ButtonDefaults.buttonColors(containerColor = Color(0xFF4E342E)),
-            modifier = Modifier.width(56.dp)
-        ) {
-            Text(
-                text     = "CLR",
-                fontSize = 10.sp,
-                fontWeight = FontWeight.Bold,
-                color    = ColorWhite,
-            )
-        }
+        BarBtn(label = "CLR", onClick = onClear, color = Color(0xFF4E342E))
+    }
+}
+
+@Composable
+private fun RowScope.BarBtn(
+    label  : String,
+    onClick: () -> Unit,
+    color  : Color,
+    bold   : Boolean = false,
+    enabled: Boolean = true,
+) {
+    Button(
+        onClick  = onClick,
+        enabled  = enabled,
+        colors   = ButtonDefaults.buttonColors(
+            containerColor         = color,
+            disabledContainerColor = color.copy(alpha = 0.35f),
+        ),
+        contentPadding = PaddingValues(horizontal = 6.dp, vertical = 4.dp),
+        modifier = Modifier.weight(1f).height(36.dp),
+    ) {
+        Text(
+            text       = label,
+            fontSize   = 10.sp,
+            fontWeight = if (bold) FontWeight.ExtraBold else FontWeight.Bold,
+            color      = White,
+            maxLines   = 1,
+        )
     }
 }
