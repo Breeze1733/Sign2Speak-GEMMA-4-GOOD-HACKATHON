@@ -14,6 +14,7 @@ import androidx.core.content.ContextCompat
 import androidx.lifecycle.LifecycleOwner
 import com.google.mediapipe.framework.image.BitmapImageBuilder
 import com.google.mediapipe.tasks.core.BaseOptions
+import com.google.mediapipe.tasks.core.Delegate
 import com.google.mediapipe.tasks.vision.core.RunningMode
 import com.google.mediapipe.tasks.vision.facelandmarker.FaceLandmarker
 import com.google.mediapipe.tasks.vision.facelandmarker.FaceLandmarker.FaceLandmarkerOptions
@@ -45,35 +46,55 @@ class CameraManager(
     private var cameraProvider: ProcessCameraProvider? = null
 
     fun initialize() {
-        try {
-            val handOptions = HandLandmarkerOptions.builder()
-                .setBaseOptions(BaseOptions.builder().setModelAssetPath("hand_landmarker.task").build())
-                .setRunningMode(RunningMode.VIDEO)
-                .setNumHands(2)
-                .setMinHandDetectionConfidence(0.2f)
-                .setMinHandPresenceConfidence(0.2f)
-                .setMinTrackingConfidence(0.2f)
-                .build()
-            handLandmarker = HandLandmarker.createFromOptions(context, handOptions)
-            Log.i(TAG, "HandLandmarker initialisé")
-        } catch (e: Exception) {
-            Log.e(TAG, "HandLandmarker ÉCHEC: ${e.message}")
-        }
+        // Essaie GPU d'abord, fallback CPU si indisponible
+        handLandmarker = createHandLandmarker(Delegate.GPU)
+            ?: createHandLandmarker(Delegate.CPU)
+        faceLandmarker = createFaceLandmarker(Delegate.GPU)
+            ?: createFaceLandmarker(Delegate.CPU)
+    }
 
-        try {
-            val faceOptions = FaceLandmarkerOptions.builder()
-                .setBaseOptions(BaseOptions.builder().setModelAssetPath("face_landmarker.task").build())
-                .setRunningMode(RunningMode.VIDEO)
-                .setNumFaces(1)
-                .setMinFaceDetectionConfidence(0.3f)
-                .setMinFacePresenceConfidence(0.3f)
-                .setMinTrackingConfidence(0.3f)
-                .build()
-            faceLandmarker = FaceLandmarker.createFromOptions(context, faceOptions)
-            Log.i(TAG, "FaceLandmarker initialisé")
-        } catch (e: Exception) {
-            Log.e(TAG, "FaceLandmarker ÉCHEC: ${e.message}")
+    private fun createHandLandmarker(delegate: Delegate): HandLandmarker? = try {
+        val options = HandLandmarkerOptions.builder()
+            .setBaseOptions(
+                BaseOptions.builder()
+                    .setModelAssetPath("hand_landmarker.task")
+                    .setDelegate(delegate)
+                    .build()
+            )
+            .setRunningMode(RunningMode.VIDEO)
+            .setNumHands(2)
+            .setMinHandDetectionConfidence(0.2f)
+            .setMinHandPresenceConfidence(0.2f)
+            .setMinTrackingConfidence(0.2f)
+            .build()
+        HandLandmarker.createFromOptions(context, options).also {
+            Log.i(TAG, "HandLandmarker initialisé ($delegate)")
         }
+    } catch (e: Exception) {
+        Log.w(TAG, "HandLandmarker $delegate ÉCHEC: ${e.message}")
+        null
+    }
+
+    private fun createFaceLandmarker(delegate: Delegate): FaceLandmarker? = try {
+        val options = FaceLandmarkerOptions.builder()
+            .setBaseOptions(
+                BaseOptions.builder()
+                    .setModelAssetPath("face_landmarker.task")
+                    .setDelegate(delegate)
+                    .build()
+            )
+            .setRunningMode(RunningMode.VIDEO)
+            .setNumFaces(1)
+            .setMinFaceDetectionConfidence(0.3f)
+            .setMinFacePresenceConfidence(0.3f)
+            .setMinTrackingConfidence(0.3f)
+            .build()
+        FaceLandmarker.createFromOptions(context, options).also {
+            Log.i(TAG, "FaceLandmarker initialisé ($delegate)")
+        }
+    } catch (e: Exception) {
+        Log.w(TAG, "FaceLandmarker $delegate ÉCHEC: ${e.message}")
+        null
     }
 
     fun startCamera(lifecycleOwner: LifecycleOwner, previewView: PreviewView) {

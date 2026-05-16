@@ -2,7 +2,12 @@ package com.sign2speak.app
 
 import android.content.Context
 import android.util.Log
-import com.google.mediapipe.tasks.genai.llminference.LlmInference
+import com.google.ai.edge.litertlm.Backend
+import com.google.ai.edge.litertlm.ConversationConfig
+import com.google.ai.edge.litertlm.Contents
+import com.google.ai.edge.litertlm.Engine
+import com.google.ai.edge.litertlm.EngineConfig
+import com.google.ai.edge.litertlm.SamplerConfig
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.io.File
@@ -11,122 +16,118 @@ private const val TAG = "Gloss2TextEngine"
 
 /**
  * Gloss2TextEngine — traduit une séquence de glosses ASL en phrase anglaise
- * via MediaPipe LLM Inference (Gemma 4 E2B / 2B).
+ * via LiteRT-LM + Gemma 4 E2B (inférence on-device).
  *
- * Le modèle GGUF doit être placé dans le stockage externe de l'appareil Android :
- *   /sdcard/gemma4-2b-it-q4.gguf
- *   (ou autre chemin passé en paramètre)
+ * Modèle requis : gemma-4-E2B-it.litertlm (2.58 GB)
+ * Source : https://huggingface.co/litert-community/gemma-4-E2B-it-litert-lm
  *
- * Si le modèle est absent, [translate] retourne les glosses concaténés directement
- * (fallback gracieux).
+ * Installation :
+ *   adb shell mkdir -p /sdcard/Android/data/com.sign2speak.app/files/
+ *   adb push gemma-4-E2B-it.litertlm /sdcard/Android/data/com.sign2speak.app/files/
  *
- * NOTE API : LlmInference de mediapipe-tasks-genai 0.10.14 — l'API peut
- * légèrement varier selon la version. Adaptez les builder methods si nécessaire.
+ * Si le modèle est absent, [translate] retourne les glosses concaténés (fallback).
  */
-class Gloss2TextEngine(
-    private val context: Context,
-    private val modelPath: String = "/sdcard/gemma4-2b-it-q4.gguf",
-) {
+class Gloss2TextEngine(private val context: Context) {
 
-    private var llm: LlmInference? = null
+    private var engine: Engine? = null
 
-    /** Vrai si le modèle LLM a été chargé avec succès. */
-    val isAvailable: Boolean get() = llm != null
+    @Volatile private var isInitialized = false
 
-    // Prompt système (identique à live_winner.py)
-    private val systemPromptTemplate = """
+    val isAvailable: Boolean get() = engine != null
+
+    private val modelPath: String
+        get() = "${context.getExternalFilesDir(null)}/gemma-4-E2B-it.litertlm"
+
+    private val systemPromptBase = """
 You are an ASL (American Sign Language) interpreter. You receive a sequence of ASL glosses and must convert them into natural English sentences.
 
 ASL grammar is different from English:
 - ASL uses topic-comment structure (topic first)
 - Time indicators come first ("YESTERDAY I GO STORE" = "I went to the store yesterday")
 - No articles (a, the) or "to be" verbs in ASL
-- Questions use facial grammar, the word order may differ
 
 Rules:
 - Output ONLY the English sentence, nothing else
 - Keep it concise and natural
 - If glosses are unclear, make the most reasonable interpretation
-- Style: {style}
-
-Style descriptions:
-- professional: formal, clear, suitable for medical/business contexts
-- friendly: casual, warm, conversational
-- simple: short sentences, easy vocabulary, suitable for children
 """.trimIndent()
 
-    init {
-        tryLoadLlm()
-    }
+    /** Initialise Gemma — à appeler depuis un coroutine IO (peut prendre ~10 s). */
+    suspend fun initialize() = withContext(Dispatchers.IO) {
+        if (isInitialized) return@withContext
+        isInitialized = true
 
-    private fun tryLoadLlm() {
         val modelFile = File(modelPath)
         if (!modelFile.exists()) {
-            Log.w(TAG, "Modèle LLM introuvable : $modelPath — mode fallback activé")
-            return
+            Log.w(TAG, "Modèle introuvable : $modelPath — fallback activé")
+            return@withContext
         }
-        try {
-            // NOTE : LlmInference.LlmInferenceOptions API (mediapipe-tasks-genai 0.10.14)
-            // Vérifier la disponibilité de la méthode maxNewTokens() vs setMaxTokens()
-            // selon la version exacte du SDK.
-            val options = LlmInference.LlmInferenceOptions.builder()
-                .setModelPath(modelPath)
-                .setMaxTokens(50)
-                .setTopK(40)
-                .setTemperature(0.3f)
-                .setRandomSeed(42)
-                .build()
-            llm = LlmInference.createFromOptions(context, options)
-            Log.i(TAG, "LLM Gemma chargé depuis $modelPath")
-        } catch (e: Exception) {
-            Log.e(TAG, "Impossible de charger le LLM : ${e.message}")
-            llm = null
+
+        engine = tryCreateEngine(gpu = true) ?: tryCreateEngine(gpu = false)
+    }
+
+    private suspend fun tryCreateEngine(gpu: Boolean): Engine? = try {
+        val backend = if (gpu) Backend.GPU() else Backend.CPU()
+        val config = EngineConfig(
+            modelPath = modelPath,
+            backend = backend,
+            cacheDir = context.cacheDir.absolutePath,
+        )
+        Engine(config).also { eng ->
+            eng.initialize()
+            Log.i(TAG, "Gemma 4 E2B chargé (${if (gpu) "GPU" else "CPU"})")
         }
+    } catch (e: Exception) {
+        Log.w(TAG, "${if (gpu) "GPU" else "CPU"} failed : ${e.message}")
+        null
     }
 
     /**
      * Traduit une liste de glosses ASL en phrase anglaise.
-     * Suspend function — sûre à appeler depuis un coroutine context.
-     *
-     * @param glosses  Liste de glosses (ex. ["HELLO", "MY", "NAME"])
-     * @param style    Style de traduction : "professional" | "friendly" | "simple"
-     * @return         Phrase anglaise traduite, ou les glosses concaténées en fallback.
+     * Initialise Gemma automatiquement au premier appel.
      */
     suspend fun translate(glosses: List<String>, style: String = "friendly"): String =
-        withContext(Dispatchers.Default) {
+        withContext(Dispatchers.IO) {
             if (glosses.isEmpty()) return@withContext ""
+            if (!isInitialized) initialize()
 
             val glossStr = glosses.joinToString(" ")
             Log.i(TAG, "Traduction [$style] : $glossStr")
 
-            val engine = llm
-            if (engine == null) {
-                // Fallback : retourne les glosses concaténés en minuscules
-                Log.w(TAG, "LLM indisponible — retour direct des glosses")
-                return@withContext glossStr.lowercase()
-                    .split(" ")
-                    .joinToString(" ") { it.replaceFirstChar { c -> c.uppercase() } }
+            val eng = engine ?: return@withContext fallback(glossStr)
+
+            val styleNote = when (style) {
+                "professional" -> "formal, clear, suitable for medical/business contexts"
+                "simple"       -> "short sentences, easy vocabulary, suitable for children"
+                else           -> "casual, warm, conversational"
             }
 
-            val systemPrompt = systemPromptTemplate.replace("{style}", style)
-            val fullPrompt   = "<start_of_turn>user\n$systemPrompt\n\nASL glosses: $glossStr<end_of_turn>\n<start_of_turn>model\n"
-
             try {
-                val result = engine.generateResponse(fullPrompt)
-                // Nettoyage : retire les balises éventuelles de fin de tour
-                result
+                val conversation = eng.createConversation(
+                    ConversationConfig(
+                        systemInstruction = Contents.of("$systemPromptBase\nStyle: $styleNote."),
+                        samplerConfig = SamplerConfig(topK = 40, topP = 0.95, temperature = 0.3),
+                    )
+                )
+                val response = conversation.sendMessage("ASL glosses: $glossStr")
+                conversation.close()
+                response.toString()
                     .replace("<end_of_turn>", "")
                     .replace("<eos>", "")
                     .trim()
                     .takeIf { it.isNotBlank() } ?: glossStr
             } catch (e: Exception) {
-                Log.e(TAG, "Erreur génération LLM : ${e.message}")
-                glossStr
+                Log.e(TAG, "Erreur génération Gemma : ${e.message}")
+                fallback(glossStr)
             }
         }
 
+    private fun fallback(glossStr: String) = glossStr
+        .split(" ")
+        .joinToString(" ") { it.lowercase().replaceFirstChar { c -> c.uppercase() } }
+
     fun close() {
-        try { llm?.close() } catch (_: Exception) {}
-        llm = null
+        try { engine?.close() } catch (_: Exception) {}
+        engine = null
     }
 }

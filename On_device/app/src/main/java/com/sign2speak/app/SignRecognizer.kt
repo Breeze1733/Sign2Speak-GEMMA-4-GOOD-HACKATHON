@@ -120,9 +120,11 @@ class SignRecognizer(private val context: Context) {
 
         try {
             val modelBuffer = loadModelFile("classifier.tflite")
-            val options = Interpreter.Options().apply { setNumThreads(4) }
+            val options = Interpreter.Options().apply {
+                setNumThreads(4)
+            }
             interpreter = Interpreter(modelBuffer, options)
-            Log.i(TAG, "Modèle LiteRT chargé ($numClasses classes)")
+            Log.i(TAG, "Modèle LiteRT chargé ($numClasses classes, CPU)")
         } catch (e: Exception) {
             Log.e(TAG, "classifier.tflite erreur : ${e.message}")
         }

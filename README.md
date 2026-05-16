@@ -49,3 +49,18 @@ kaggle competitions download -c asl-signs
 # for lunch live_winner best model 
 
 python live_winner.py --model ./model_winner
+
+
+
+# pour installer le modele 
+https://ai.google.dev/edge/litert-lm/android?hl=fr
+
+Commande pour installer le modèle :
+
+
+# Crée le dossier si nécessaire (l'app doit être installée d'abord)
+adb shell mkdir -p /sdcard/Android/data/com.sign2speak.app/files/
+
+# Push le modèle (2.58 GB — prend ~2-5 min selon le câble)
+adb push gemma-4-E2B-it.litertlm /sdcard/Android/data/com.sign2speak.app/files/
+Sans modèle, l'app fonctionne normalement en fallback (glosses → texte direct). Avec le modèle présent, Gemma 4 E2B chargera en arrière-plan au démarrage et sera prêt avant le premier signe.

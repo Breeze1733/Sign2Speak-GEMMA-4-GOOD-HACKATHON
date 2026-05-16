@@ -53,6 +53,11 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private val pipelineDispatcher = pipelineExecutor.asCoroutineDispatcher()
     private val pipelineScope      = CoroutineScope(SupervisorJob() + pipelineDispatcher)
 
+    init {
+        // Charge Gemma en arrière-plan dès le démarrage (évite freeze au 1er signe)
+        viewModelScope.launch(Dispatchers.IO) { gloss2Text.initialize() }
+    }
+
     // Pipeline-only mutable state (never touched from other threads)
     private var lastStableLabel       = ""
     private var lastTranslatedSentence = ""

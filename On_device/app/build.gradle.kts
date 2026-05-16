@@ -37,17 +37,19 @@ android {
         targetCompatibility = JavaVersion.VERSION_11
     }
 
-    kotlinOptions {
-        jvmTarget = "11"
+    kotlin {
+        compilerOptions {
+            jvmTarget.set(org.jetbrains.kotlin.gradle.dsl.JvmTarget.JVM_11)
+        }
     }
 
     buildFeatures {
         compose = true
     }
 
-    // Nécessaire pour les gros fichiers assets (classifier.tflite, modèles gemma .gguf)
-    aaptOptions {
-        noCompress += listOf("tflite", "gguf", "task", "bin")
+    // Nécessaire pour les gros fichiers assets (classifier.tflite, modèles gemma .litertlm)
+    androidResources {
+        noCompress += listOf("tflite", "gguf", "litertlm", "task", "bin")
     }
 
     // Éviter les conflits de fichiers dupliqués provenant de mediapipe et litert
@@ -90,8 +92,8 @@ dependencies {
 
     // MediaPipe Tasks (vision : HandLandmarker + FaceLandmarker)
     implementation(libs.mediapipe.tasks.vision)
-    // MediaPipe Tasks GenAI (LLM Inference pour Gemma 4)
-    implementation(libs.mediapipe.tasks.genai)
+    // LiteRT-LM — Gemma 4 E2B on-device (remplace MediaPipe LLM Inference)
+    implementation("com.google.ai.edge.litertlm:litertlm-android:latest.release")
 
     // TFLite runtime (arm64-v8a + x86_64)
     implementation("org.tensorflow:tensorflow-lite:2.16.1")
