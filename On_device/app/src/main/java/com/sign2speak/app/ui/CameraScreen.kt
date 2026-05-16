@@ -22,7 +22,11 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Button
@@ -52,6 +56,7 @@ import androidx.compose.ui.viewinterop.AndroidView
 import com.sign2speak.app.AppState
 import com.sign2speak.app.CameraManager
 import com.sign2speak.app.DetectedHand
+import com.sign2speak.app.HistoryEntry
 import com.sign2speak.app.LandmarkPoint
 import com.sign2speak.app.MainViewModel
 
@@ -114,27 +119,23 @@ fun CameraScreen(viewModel: MainViewModel) {
         // ── 3. HUD ───────────────────────────────────────────────────────────
         Box(modifier = Modifier.fillMaxSize()) {
 
-            // Top row: status + top-3
-            Row(
+            // Top-left: status + history
+            Column(
                 modifier = Modifier
-                    .fillMaxWidth()
                     .align(Alignment.TopStart)
                     .padding(8.dp),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.Top,
+                verticalArrangement = Arrangement.spacedBy(4.dp),
             ) {
                 StatusPanel(state)
-                Top3Panel(state)
+                HistoryPanel(
+                    history  = state.history,
+                    onReplay = { entry -> viewModel.replaySentence(entry.interpretation) },
+                )
             }
 
-            // Debug log (below status panel)
-            if (state.debugLogs.isNotEmpty()) {
-                DebugLogPanel(
-                    logs = state.debugLogs,
-                    modifier = Modifier
-                        .align(Alignment.TopStart)
-                        .padding(start = 8.dp, top = 76.dp),
-                )
+            // Top-right: top-3 predictions
+            Box(modifier = Modifier.align(Alignment.TopEnd).padding(8.dp)) {
+                Top3Panel(state)
             }
 
             // Current sign (large, center-bottom)
@@ -317,25 +318,59 @@ private fun Top3Panel(state: AppState) {
     }
 }
 
-// ─── Debug log panel ─────────────────────────────────────────────────────────
+// ─── History panel (top-left) ─────────────────────────────────────────────────
 
 @Composable
-private fun DebugLogPanel(logs: List<String>, modifier: Modifier) {
-    Column(
-        modifier = modifier
-            .widthIn(max = 280.dp)
-            .background(Color(0xCC000000), RoundedCornerShape(6.dp))
-            .padding(horizontal = 8.dp, vertical = 4.dp),
+private fun HistoryPanel(history: List<HistoryEntry>, onReplay: (HistoryEntry) -> Unit) {
+    if (history.isEmpty()) return
+    LazyColumn(
+        modifier = Modifier
+            .widthIn(max = 260.dp)
+            .heightIn(max = 220.dp)
+            .background(Scrim, RoundedCornerShape(8.dp))
+            .padding(6.dp),
+        verticalArrangement = Arrangement.spacedBy(6.dp),
+        reverseLayout = true,
     ) {
-        logs.forEach { line ->
+        items(history, key = { it.id }) { entry ->
+            HistoryRow(entry = entry, onReplay = { onReplay(entry) })
+        }
+    }
+}
+
+@Composable
+private fun HistoryRow(entry: HistoryEntry, onReplay: () -> Unit) {
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.SpaceBetween,
+    ) {
+        Column(modifier = Modifier.weight(1f).padding(end = 6.dp)) {
             Text(
-                text       = line,
-                color      = Color(0xFF80DEEA),
-                fontSize   = 9.sp,
+                text       = entry.glosses.joinToString(" | ").uppercase(),
+                color      = Cyan.copy(alpha = 0.75f),
+                fontSize   = 8.sp,
                 fontFamily = FontFamily.Monospace,
                 maxLines   = 1,
                 overflow   = TextOverflow.Ellipsis,
             )
+            Text(
+                text       = entry.interpretation,
+                color      = White,
+                fontSize   = 11.sp,
+                lineHeight = 14.sp,
+                maxLines   = 2,
+                overflow   = TextOverflow.Ellipsis,
+            )
+        }
+        Box(
+            modifier = Modifier
+                .size(26.dp)
+                .background(Color(0xFF0D47A1), CircleShape)
+                .clickable { onReplay() },
+            contentAlignment = Alignment.Center,
+        ) {
+            Text("▶", color = White, fontSize = 9.sp)
         }
     }
 }

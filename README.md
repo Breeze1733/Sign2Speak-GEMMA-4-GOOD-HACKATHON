@@ -64,3 +64,4 @@ adb shell mkdir -p /sdcard/Android/data/com.sign2speak.app/files/
 # Push le modèle (2.58 GB — prend ~2-5 min selon le câble)
 adb push gemma-4-E2B-it.litertlm /sdcard/Android/data/com.sign2speak.app/files/
 Sans modèle, l'app fonctionne normalement en fallback (glosses → texte direct). Avec le modèle présent, Gemma 4 E2B chargera en arrière-plan au démarrage et sera prêt avant le premier signe.
+adb shell ls -lh /sdcard/Android/data/com.sign2speak.app/files/

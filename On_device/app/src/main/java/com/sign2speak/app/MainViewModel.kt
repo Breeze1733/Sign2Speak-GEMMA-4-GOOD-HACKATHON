@@ -14,7 +14,18 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import org.json.JSONArray
+import org.json.JSONObject
+import java.io.File
 import java.util.concurrent.Executors
+
+// ─── History entry ────────────────────────────────────────────────────────────
+
+data class HistoryEntry(
+    val id: Long,
+    val glosses: List<String>,
+    val interpretation: String,
+)
 
 // ─── App state ────────────────────────────────────────────────────────────────
 
@@ -31,7 +42,7 @@ data class AppState(
     val fps: Float = 0f,
     val detectedHands: List<DetectedHand> = emptyList(),
     val faceDots: List<LandmarkPoint> = emptyList(),
-    val debugLogs: List<String> = emptyList(),
+    val history: List<HistoryEntry> = emptyList(),
     val cameraWidth: Int = 720,
     val cameraHeight: Int = 1280,
 )
@@ -48,22 +59,24 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private val gloss2Text: Gloss2TextEngine by lazy { Gloss2TextEngine(application) }
     private val tts: TtsEngine by lazy { TtsEngine(application) }
 
-    // Single-threaded pipeline: MediaPipe VIDEO mode requires sequential calls
+    private val historyFile = File(application.cacheDir, "interpretation_history.json")
+
     private val pipelineExecutor   = Executors.newSingleThreadExecutor()
     private val pipelineDispatcher = pipelineExecutor.asCoroutineDispatcher()
     private val pipelineScope      = CoroutineScope(SupervisorJob() + pipelineDispatcher)
 
-    init {
-        // Charge Gemma en arrière-plan dès le démarrage (évite freeze au 1er signe)
-        viewModelScope.launch(Dispatchers.IO) { gloss2Text.initialize() }
-    }
-
-    // Pipeline-only mutable state (never touched from other threads)
-    private var lastStableLabel       = ""
+    private var lastStableLabel        = ""
     private var lastTranslatedSentence = ""
-    private var lastFrameTimeMs       = 0L
-    private val fpsSamples            = ArrayDeque<Float>(30)
-    private var frameCount            = 0
+    private var lastFrameTimeMs        = 0L
+    private val fpsSamples             = ArrayDeque<Float>(30)
+    private var frameCount             = 0
+
+    init {
+        viewModelScope.launch(Dispatchers.IO) { gloss2Text.initialize() }
+        viewModelScope.launch(Dispatchers.IO) {
+            _state.update { it.copy(history = loadHistory()) }
+        }
+    }
 
     // ── Public API ────────────────────────────────────────────────────────────
 
@@ -76,16 +89,14 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     ) {
         if (imgW > 0 && imgH > 0 && (_state.value.cameraWidth != imgW || _state.value.cameraHeight != imgH)) {
             _state.update { it.copy(cameraWidth = imgW, cameraHeight = imgH) }
-            log("CAM: ${imgW}×${imgH}")
         }
         pipelineScope.launch { processFrame(handResult, faceResult, timestampMs) }
     }
 
-    /** Force-flush current pending glosses to translation (skips the 3 s timeout). */
     fun manualTranslate() {
         pipelineScope.launch {
             val glosses = glossBuffer.currentGlosses().also { glossBuffer.clear() }
-            if (glosses.isEmpty()) { log("TRANS: no glosses"); return@launch }
+            if (glosses.isEmpty()) return@launch
             startTranslation(glosses)
         }
     }
@@ -96,6 +107,11 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun setStyle(style: String) { _state.update { it.copy(style = style) } }
+
+    /** Rejoue vocalement une interprétation de l'historique. */
+    fun replaySentence(sentence: String) {
+        if (!_state.value.isMuted) tts.speak(sentence)
+    }
 
     fun clearBuffer() {
         pipelineScope.launch {
@@ -111,7 +127,6 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     detectedHands = emptyList(), faceDots = emptyList(),
                 )
             }
-            log("Buffer cleared")
         }
     }
 
@@ -122,7 +137,6 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         faceResult: FaceLandmarkerResult?,
         timestampMs: Long,
     ) {
-        // FPS
         val now = System.currentTimeMillis()
         if (lastFrameTimeMs > 0L) {
             fpsSamples.addLast(1000f / (now - lastFrameTimeMs).coerceAtLeast(1L))
@@ -132,30 +146,19 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         val avgFps = if (fpsSamples.isNotEmpty()) fpsSamples.average().toFloat() else 0f
         frameCount++
 
-        // Sign recognition (overlay extraction happens inside SignRecognizer)
         val rec         = signRecognizer.processFrame(handResult, faceResult, timestampMs)
         val hasHand     = rec.hasHand
         val currentSign = rec.topLabel
         val currentConf = rec.topConf
 
-        // Log every 60 frames or on sign change
-        if (frameCount % 60 == 0) {
-            log("Frame $frameCount | ${avgFps.toInt()} fps | hands: ${rec.detectedHands.size}")
-        }
         if (currentSign.isNotEmpty() && currentSign != lastStableLabel) {
-            log("Sign: $currentSign (${(currentConf * 100).toInt()}%)")
-        }
-
-        // Gloss accumulation
-        if (currentSign.isNotEmpty() && currentSign != lastStableLabel) {
-            if (lastStableLabel.isNotEmpty()) { glossBuffer.push(lastStableLabel); log("Push: $lastStableLabel") }
+            if (lastStableLabel.isNotEmpty()) glossBuffer.push(lastStableLabel)
             lastStableLabel = currentSign
         } else if (currentSign.isEmpty() && lastStableLabel.isNotEmpty()) {
-            glossBuffer.push(lastStableLabel); log("Push: $lastStableLabel")
+            glossBuffer.push(lastStableLabel)
             lastStableLabel = ""
         }
 
-        // Auto-flush after 3 s silence
         glossBuffer.tick()?.takeIf { it.isNotEmpty() }?.let { startTranslation(it) }
 
         _state.update {
@@ -174,23 +177,52 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     private fun startTranslation(glosses: List<String>) {
         val style = _state.value.style
-        log("→ Translate [${glosses.joinToString(" ")}] [$style]")
         viewModelScope.launch(Dispatchers.Default) {
             _state.update { it.copy(isTranslating = true) }
-            val sentence = gloss2Text.translate(glosses, style)
-            log("← Gemma: $sentence")
-            _state.update { it.copy(translatedSentence = sentence, isTranslating = false) }
-            if (sentence.isNotBlank() && sentence != lastTranslatedSentence) {
+            val sentence   = gloss2Text.translate(glosses, style)
+            val entry      = HistoryEntry(System.currentTimeMillis(), glosses, sentence)
+            val newHistory = (_state.value.history + entry).takeLast(20)
+            _state.update { it.copy(translatedSentence = sentence, isTranslating = false, history = newHistory) }
+            viewModelScope.launch(Dispatchers.IO) { saveHistory(newHistory) }
+            // TTS uniquement si le LLM est chargé — pas le fallback texte brut
+            if (gloss2Text.isAvailable && sentence.isNotBlank() && sentence != lastTranslatedSentence) {
                 lastTranslatedSentence = sentence
                 if (!_state.value.isMuted) tts.speak(sentence)
             }
         }
     }
 
-    // ── Debug log (thread-safe via StateFlow.update) ──────────────────────────
+    // ── History persistence ───────────────────────────────────────────────────
 
-    private fun log(msg: String) {
-        _state.update { s -> s.copy(debugLogs = (s.debugLogs + msg).takeLast(8)) }
+    private fun loadHistory(): List<HistoryEntry> = try {
+        if (!historyFile.exists()) emptyList()
+        else {
+            val arr = JSONArray(historyFile.readText())
+            (0 until arr.length()).map { i ->
+                val o  = arr.getJSONObject(i)
+                val ga = o.getJSONArray("glosses")
+                HistoryEntry(
+                    id             = o.getLong("id"),
+                    glosses        = (0 until ga.length()).map { j -> ga.getString(j) },
+                    interpretation = o.getString("interpretation"),
+                )
+            }
+        }
+    } catch (_: Exception) { emptyList() }
+
+    private fun saveHistory(history: List<HistoryEntry>) {
+        try {
+            val arr = JSONArray()
+            history.forEach { e ->
+                val o = JSONObject()
+                o.put("id", e.id)
+                val ga = JSONArray().also { a -> e.glosses.forEach { a.put(it) } }
+                o.put("glosses", ga)
+                o.put("interpretation", e.interpretation)
+                arr.put(o)
+            }
+            historyFile.writeText(arr.toString())
+        } catch (_: Exception) {}
     }
 
     // ── Lifecycle ─────────────────────────────────────────────────────────────
