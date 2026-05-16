@@ -24,6 +24,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -49,6 +50,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalLifecycleOwner
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -138,6 +140,18 @@ fun CameraScreen(viewModel: MainViewModel) {
                 Top3Panel(state)
             }
 
+            // Top-center: heard text from hearing person
+            if (state.isListening || state.heardText.isNotEmpty()) {
+                HeardTextPanel(
+                    text        = state.heardText,
+                    isListening = state.isListening,
+                    modifier    = Modifier
+                        .align(Alignment.TopCenter)
+                        .statusBarsPadding()
+                        .padding(horizontal = 100.dp, vertical = 8.dp),
+                )
+            }
+
             // Current sign (large, center-bottom)
             if (state.currentSign.isNotEmpty()) {
                 CurrentSignDisplay(
@@ -172,6 +186,7 @@ fun CameraScreen(viewModel: MainViewModel) {
                 onStyle     = { viewModel.setStyle(it) },
                 onTranslate = { viewModel.manualTranslate() },
                 onClear     = { viewModel.clearBuffer() },
+                onListen    = { viewModel.toggleListening() },
                 modifier    = Modifier.align(Alignment.BottomCenter),
             )
         }
@@ -464,6 +479,42 @@ private fun BottomInfoPanel(state: AppState, modifier: Modifier) {
     }
 }
 
+// ─── Heard text panel (top-center) — texte de la personne entendante ─────────
+
+@Composable
+private fun HeardTextPanel(text: String, isListening: Boolean, modifier: Modifier) {
+    Box(
+        modifier = modifier
+            .fillMaxWidth()
+            .background(Scrim, RoundedCornerShape(10.dp))
+            .padding(horizontal = 12.dp, vertical = 8.dp),
+        contentAlignment = Alignment.Center,
+    ) {
+        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+            if (isListening && text.isEmpty()) {
+                Text(
+                    text       = "Listening…",
+                    color      = Cyan,
+                    fontSize   = 13.sp,
+                    fontWeight = FontWeight.Medium,
+                    textAlign  = TextAlign.Center,
+                )
+            }
+            if (text.isNotEmpty()) {
+                Text(
+                    text       = text,
+                    color      = White,
+                    fontSize   = 16.sp,
+                    fontWeight = FontWeight.SemiBold,
+                    textAlign  = TextAlign.Center,
+                    maxLines   = 3,
+                    overflow   = TextOverflow.Ellipsis,
+                )
+            }
+        }
+    }
+}
+
 // ─── Control bar ─────────────────────────────────────────────────────────────
 
 @Composable
@@ -473,6 +524,7 @@ private fun ControlBar(
     onStyle    : (String) -> Unit,
     onTranslate: () -> Unit,
     onClear    : () -> Unit,
+    onListen   : () -> Unit,
     modifier   : Modifier,
 ) {
     Row(
@@ -489,6 +541,14 @@ private fun ControlBar(
             color   = if (state.isMuted) Color(0xFF424242) else Color(0xFF1B5E20),
         )
 
+        // MIC button — red pulsing when active
+        BarBtn(
+            label   = if (state.isListening) "● MIC" else "MIC",
+            onClick = onListen,
+            color   = if (state.isListening) Color(0xFFB71C1C) else Color(0xFF4A148C),
+            bold    = state.isListening,
+        )
+
         listOf("professional" to "P", "friendly" to "F", "simple" to "S").forEach { (key, lbl) ->
             BarBtn(
                 label   = lbl,
@@ -498,7 +558,6 @@ private fun ControlBar(
             )
         }
 
-        // Translate button — lit up when glosses are waiting
         BarBtn(
             label   = "TRANS",
             onClick = onTranslate,

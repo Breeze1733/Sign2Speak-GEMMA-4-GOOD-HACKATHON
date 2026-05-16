@@ -1,6 +1,7 @@
 package com.sign2speak.app
 
 import android.Manifest
+import android.content.pm.PackageManager
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
@@ -29,11 +30,10 @@ class MainActivity : ComponentActivity() {
 
     private val viewModel: MainViewModel by viewModels()
 
-    // Launcher pour la demande de permission caméra
-    private val cameraPermissionLauncher = registerForActivityResult(
-        ActivityResultContracts.RequestPermission()
-    ) { granted ->
-        cameraPermissionGranted = granted
+    private val permissionLauncher = registerForActivityResult(
+        ActivityResultContracts.RequestMultiplePermissions()
+    ) { results ->
+        cameraPermissionGranted = results[Manifest.permission.CAMERA] == true
     }
 
     private var cameraPermissionGranted by mutableStateOf(false)
@@ -42,9 +42,14 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
 
-        // Vérifie si la permission est déjà accordée
-        cameraPermissionGranted = checkSelfPermission(Manifest.permission.CAMERA) ==
-                android.content.pm.PackageManager.PERMISSION_GRANTED
+        cameraPermissionGranted = checkSelfPermission(Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED
+
+        // Request both permissions upfront; RECORD_AUDIO is needed for the MIC/STT feature.
+        if (!cameraPermissionGranted || checkSelfPermission(Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
+            permissionLauncher.launch(
+                arrayOf(Manifest.permission.CAMERA, Manifest.permission.RECORD_AUDIO)
+            )
+        }
 
         setContent {
             MaterialTheme(
@@ -55,7 +60,6 @@ class MainActivity : ComponentActivity() {
                 if (cameraPermissionGranted) {
                     CameraScreen(viewModel = viewModel)
                 } else {
-                    // Écran "Permission required"
                     Box(
                         modifier = Modifier
                             .fillMaxSize()
@@ -80,7 +84,12 @@ class MainActivity : ComponentActivity() {
                             )
                             Button(onClick = {
                                 permissionRequested = true
-                                cameraPermissionLauncher.launch(Manifest.permission.CAMERA)
+                                permissionLauncher.launch(
+                                    arrayOf(
+                                        Manifest.permission.CAMERA,
+                                        Manifest.permission.RECORD_AUDIO,
+                                    )
+                                )
                             }) {
                                 Text(
                                     if (permissionRequested) "Relancer la demande"

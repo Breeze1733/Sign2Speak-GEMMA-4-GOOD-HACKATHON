@@ -43,6 +43,8 @@ data class AppState(
     val detectedHands: List<DetectedHand> = emptyList(),
     val faceDots: List<LandmarkPoint> = emptyList(),
     val history: List<HistoryEntry> = emptyList(),
+    val heardText: String = "",
+    val isListening: Boolean = false,
     val cameraWidth: Int = 720,
     val cameraHeight: Int = 1280,
 )
@@ -58,6 +60,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private val glossBuffer    = GlossBuffer()
     private val gloss2Text: Gloss2TextEngine by lazy { Gloss2TextEngine(application) }
     private val tts: TtsEngine by lazy { TtsEngine(application) }
+    private val speechEngine: SpeechEngine by lazy { SpeechEngine(application) }
 
     private val historyFile = File(application.cacheDir, "interpretation_history.json")
 
@@ -107,6 +110,21 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun setStyle(style: String) { _state.update { it.copy(style = style) } }
+
+    /** Démarre / arrête l'écoute de la personne entendante. Appelé depuis le main thread. */
+    fun toggleListening() {
+        if (_state.value.isListening) {
+            speechEngine.stopListening()
+            _state.update { it.copy(isListening = false) }
+        } else {
+            _state.update { it.copy(heardText = "") }
+            speechEngine.startListening(
+                onPartial     = { text -> _state.update { it.copy(heardText = text) } },
+                onResult      = { text -> _state.update { it.copy(heardText = text, isListening = false) } },
+                onStateChange = { listening -> _state.update { it.copy(isListening = listening) } },
+            )
+        }
+    }
 
     /** Rejoue vocalement une interprétation de l'historique. */
     fun replaySentence(sentence: String) {
@@ -233,5 +251,6 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         signRecognizer.close()
         tts.shutdown()
         gloss2Text.close()
+        speechEngine.destroy()
     }
 }
