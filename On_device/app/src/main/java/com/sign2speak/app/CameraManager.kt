@@ -47,7 +47,7 @@ private const val FACE_EVERY_N = 2
  */
 class CameraManager(
     private val context: Context,
-    private val onFrame: (handResult: HandLandmarkerResult?, faceResult: FaceLandmarkerResult?, timestampMs: Long) -> Unit,
+    private val onFrame: (handResult: HandLandmarkerResult?, faceResult: FaceLandmarkerResult?, timestampMs: Long, imgW: Int, imgH: Int) -> Unit,
 ) {
 
     // Single-threaded executor pour garantir la séquentialité MediaPipe VIDEO mode
@@ -72,9 +72,9 @@ class CameraManager(
                 )
                 .setRunningMode(RunningMode.VIDEO)
                 .setNumHands(2)
-                .setMinHandDetectionConfidence(0.2f)
-                .setMinHandPresenceConfidence(0.2f)
-                .setMinTrackingConfidence(0.2f)
+                .setMinHandDetectionConfidence(0.7f)
+                .setMinHandPresenceConfidence(0.7f)
+                .setMinTrackingConfidence(0.7f)
                 .build()
             handLandmarker = HandLandmarker.createFromOptions(context, handOptions)
             Log.i(TAG, "HandLandmarker initialisé")
@@ -174,7 +174,7 @@ class CameraManager(
             }
             val faceResult = faceResultCache
 
-            onFrame(handResult, faceResult, timestampMs)
+            onFrame(handResult, faceResult, timestampMs, bitmap.width, bitmap.height)
             frameIndex++
 
         } finally {

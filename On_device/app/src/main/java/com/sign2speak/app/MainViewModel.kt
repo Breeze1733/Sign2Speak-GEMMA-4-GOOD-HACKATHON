@@ -32,6 +32,8 @@ data class AppState(
     val detectedHands: List<DetectedHand> = emptyList(),
     val faceDots: List<LandmarkPoint> = emptyList(),
     val debugLogs: List<String> = emptyList(),
+    val cameraWidth: Int = 720,
+    val cameraHeight: Int = 1280,
 )
 
 // ─── ViewModel ────────────────────────────────────────────────────────────────
@@ -64,7 +66,12 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         handResult: HandLandmarkerResult?,
         faceResult: FaceLandmarkerResult?,
         timestampMs: Long,
+        imgW: Int = 720,
+        imgH: Int = 1280,
     ) {
+        if (imgW > 0 && imgH > 0 && (_state.value.cameraWidth != imgW || _state.value.cameraHeight != imgH)) {
+            _state.update { it.copy(cameraWidth = imgW, cameraHeight = imgH) }
+        }
         pipelineScope.launch { processFrame(handResult, faceResult, timestampMs) }
     }
 

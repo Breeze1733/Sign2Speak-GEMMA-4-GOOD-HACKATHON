@@ -84,9 +84,13 @@ fun CameraScreen(viewModel: MainViewModel) {
     val lifecycleOwner = LocalLifecycleOwner.current
 
     val cameraManager = remember {
-        CameraManager(context) { hand, face, ts -> viewModel.onFrameProcessed(hand, face, ts) }
+        CameraManager(context) { hand, face, ts, imgW, imgH -> viewModel.onFrameProcessed(hand, face, ts, imgW, imgH) }
     }
-    val previewView = remember { PreviewView(context) }
+    val previewView = remember {
+        PreviewView(context).apply {
+            scaleType = PreviewView.ScaleType.FIT_CENTER
+        }
+    }
 
     LaunchedEffect(Unit) {
         cameraManager.initialize()
@@ -100,7 +104,12 @@ fun CameraScreen(viewModel: MainViewModel) {
         AndroidView(factory = { previewView }, modifier = Modifier.fillMaxSize())
 
         // ── 2. Landmark skeleton overlay ─────────────────────────────────────
-        LandmarkOverlay(detectedHands = state.detectedHands, faceDots = state.faceDots)
+        LandmarkOverlay(
+            detectedHands = state.detectedHands,
+            faceDots      = state.faceDots,
+            cameraWidth   = state.cameraWidth,
+            cameraHeight  = state.cameraHeight,
+        )
 
         // ── 3. HUD ───────────────────────────────────────────────────────────
         Box(modifier = Modifier.fillMaxSize()) {
@@ -171,17 +180,38 @@ fun CameraScreen(viewModel: MainViewModel) {
 // ─── Landmark skeleton Canvas ─────────────────────────────────────────────────
 
 @Composable
-private fun LandmarkOverlay(detectedHands: List<DetectedHand>, faceDots: List<LandmarkPoint>) {
+private fun LandmarkOverlay(
+    detectedHands: List<DetectedHand>,
+    faceDots     : List<LandmarkPoint>,
+    cameraWidth  : Int,
+    cameraHeight : Int,
+) {
     Canvas(modifier = Modifier.fillMaxSize()) {
         val w = size.width
         val h = size.height
+
+        // FIT_CENTER: compute the actual image rectangle on screen.
+        // Camera bitmap is portrait (cameraWidth×cameraHeight) after rotation.
+        // Landmark x maps to screen-Y, landmark y maps to screen-X (landscape sensor axis swap).
+        val imgW = cameraWidth.toFloat()
+        val imgH = cameraHeight.toFloat()
+        val scale    = minOf(w / imgW, h / imgH)
+        val dispW    = imgW * scale
+        val dispH    = imgH * scale
+        val xOffset  = (w - dispW) / 2f
+        val yOffset  = (h - dispH) / 2f
+
+        fun lmToScreen(lm: LandmarkPoint) = Offset(
+            xOffset + (1f - lm.y) * dispW,
+            yOffset + (1f - lm.x) * dispH,
+        )
 
         // Face: lip, nose, eye dots (cyan)
         faceDots.forEach { pt ->
             drawCircle(
                 color  = Cyan.copy(alpha = 0.75f),
                 radius = 3.dp.toPx(),
-                center = Offset((1f - pt.x) * w, pt.y * h),  // mirror x: front camera
+                center = lmToScreen(pt),
             )
         }
 
@@ -195,8 +225,8 @@ private fun LandmarkOverlay(detectedHands: List<DetectedHand>, faceDots: List<La
                 if (i < pts.size && j < pts.size) {
                     drawLine(
                         color       = baseColor.copy(alpha = 0.65f),
-                        start       = Offset((1f - pts[i].x) * w, pts[i].y * h),
-                        end         = Offset((1f - pts[j].x) * w, pts[j].y * h),
+                        start       = lmToScreen(pts[i]),
+                        end         = lmToScreen(pts[j]),
                         strokeWidth = 3.dp.toPx(),
                     )
                 }
@@ -204,10 +234,9 @@ private fun LandmarkOverlay(detectedHands: List<DetectedHand>, faceDots: List<La
 
             // Joints: filled circle + white centre
             pts.forEach { pt ->
-                val cx = (1f - pt.x) * w
-                val cy = pt.y * h
-                drawCircle(baseColor, radius = 6.dp.toPx(), center = Offset(cx, cy))
-                drawCircle(White.copy(alpha = 0.7f), radius = 2.5.dp.toPx(), center = Offset(cx, cy))
+                val center = lmToScreen(pt)
+                drawCircle(baseColor, radius = 6.dp.toPx(), center = center)
+                drawCircle(White.copy(alpha = 0.7f), radius = 2.5.dp.toPx(), center = center)
             }
         }
     }

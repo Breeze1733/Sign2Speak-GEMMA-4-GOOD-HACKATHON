@@ -24,8 +24,8 @@ private const val ROWS_PER_FRAME = 543
  *  "Right" (caméra POV) → offset 468 (left_hand dans l'index Holistic gagnant)
  *  "Left"  (caméra POV) → offset 522 (right_hand dans l'index Holistic gagnant)
  */
-private const val LEFT_HAND_OFFSET  = 468   // caméra voit "Right" → main gauche utilisateur
-private const val RIGHT_HAND_OFFSET = 522   // caméra voit "Left"  → main droite utilisateur
+private const val LEFT_HAND_OFFSET  = 468   // holistic index for left hand
+private const val RIGHT_HAND_OFFSET = 522   // holistic index for right hand
 private const val HAND_NUM_LANDMARKS = 21
 
 private val NOSE  = intArrayOf(1, 2, 98, 327)
@@ -161,7 +161,8 @@ class SignRecognizer(private val context: Context) {
         val lmsList = r.landmarks()
         if (lmsList.isEmpty()) return emptyList()
         return lmsList.mapIndexed { i, lms ->
-            val isLeft = r.handedness().getOrNull(i)?.firstOrNull()?.categoryName() == "Right"
+            // Front camera on this device: MediaPipe "Left" = user's left hand
+            val isLeft = r.handedness().getOrNull(i)?.firstOrNull()?.categoryName() == "Left"
             DetectedHand(lms.map { lm -> LandmarkPoint(lm.x(), lm.y()) }, isLeft)
         }
     }
@@ -194,11 +195,21 @@ class SignRecognizer(private val context: Context) {
         }
 
         if (handResult != null && handResult.landmarks().isNotEmpty()) {
-            for (hIdx in handResult.landmarks().indices) {
+            // Keep only hands with score >= 0.8, max 2
+            val filteredHands = handResult.landmarks()
+                .mapIndexed { i, lms ->
+                    val score = handResult.handedness().getOrNull(i)?.firstOrNull()?.score() ?: 0f
+                    Triple(i, lms, score)
+                }
+                .filter { it.third >= 0.8f }
+                .take(2)
+
+            for ((hIdx, lms, _) in filteredHands) {
                 if (hIdx >= handResult.handedness().size) break
                 val label = handResult.handedness()[hIdx][0].categoryName()
-                val offset = if (label == "Right") LEFT_HAND_OFFSET else RIGHT_HAND_OFFSET
-                val lms = handResult.landmarks()[hIdx]
+                // "Left" = user left hand → LHAND offset 468 (matches live_winner.py LHAND)
+                // "Right" = user right hand → RHAND offset 522 (matches live_winner.py RHAND)
+                val offset = if (label == "Left") LEFT_HAND_OFFSET else RIGHT_HAND_OFFSET
                 for (i in 0 until minOf(lms.size, HAND_NUM_LANDMARKS)) {
                     val lm = lms[i]
                     holistic[(offset + i) * 3 + 0] = lm.x()

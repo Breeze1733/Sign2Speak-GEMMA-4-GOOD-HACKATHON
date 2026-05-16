@@ -16,6 +16,10 @@ android {
         versionName = "1.0"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+
+        ndk {
+            abiFilters += listOf("arm64-v8a")
+        }
     }
 
     buildTypes {
@@ -89,9 +93,9 @@ dependencies {
     // MediaPipe Tasks GenAI (LLM Inference pour Gemma 4)
     implementation(libs.mediapipe.tasks.genai)
 
-    // LiteRT — com.google.ai.edge.litert (bonus hackathon, remplace org.tensorflow:tensorflow-lite)
-    implementation(libs.litert)
-    implementation(libs.litert.gpu)
+    // TFLite runtime (arm64-v8a + x86_64)
+    implementation("org.tensorflow:tensorflow-lite:2.16.1")
+    implementation("org.tensorflow:tensorflow-lite-select-tf-ops:2.16.1")
 
     // Coroutines
     implementation(libs.kotlinx.coroutines.android)
