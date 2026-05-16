@@ -88,7 +88,7 @@ fun CameraScreen(viewModel: MainViewModel) {
     }
     val previewView = remember {
         PreviewView(context).apply {
-            scaleType = PreviewView.ScaleType.FIT_CENTER
+            scaleType = PreviewView.ScaleType.FILL_CENTER
         }
     }
 
@@ -190,21 +190,10 @@ private fun LandmarkOverlay(
         val w = size.width
         val h = size.height
 
-        // FIT_CENTER: compute the actual image rectangle on screen.
-        // Camera bitmap is portrait (cameraWidth×cameraHeight) after rotation.
-        // Landmark x maps to screen-Y, landmark y maps to screen-X (landscape sensor axis swap).
-        val imgW = cameraWidth.toFloat()
-        val imgH = cameraHeight.toFloat()
-        val scale    = minOf(w / imgW, h / imgH)
-        val dispW    = imgW * scale
-        val dispH    = imgH * scale
-        val xOffset  = (w - dispW) / 2f
-        val yOffset  = (h - dispH) / 2f
-
-        fun lmToScreen(lm: LandmarkPoint) = Offset(
-            xOffset + (1f - lm.y) * dispW,
-            yOffset + (1f - lm.x) * dispH,
-        )
+        // RAW TEST: zero transformation — lm.x → screen X, lm.y → screen Y
+        // No mirror, no axis swap, no crop compensation.
+        // Observe where landmarks fall vs actual hands to determine correct formula.
+        fun lmToScreen(lm: LandmarkPoint) = Offset(lm.x * w, lm.y * h)
 
         // Face: lip, nose, eye dots (cyan)
         faceDots.forEach { pt ->

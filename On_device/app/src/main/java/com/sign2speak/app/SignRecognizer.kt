@@ -195,18 +195,11 @@ class SignRecognizer(private val context: Context) {
         }
 
         if (handResult != null && handResult.landmarks().isNotEmpty()) {
-            // Keep only hands with score >= 0.8, max 2
-            val filteredHands = handResult.landmarks()
-                .mapIndexed { i, lms ->
-                    val score = handResult.handedness().getOrNull(i)?.firstOrNull()?.score() ?: 0f
-                    Triple(i, lms, score)
-                }
-                .filter { it.third >= 0.8f }
-                .take(2)
-
-            for ((hIdx, lms, _) in filteredHands) {
+            // Match live_winner.py: no score filter, take all detected hands (max 2)
+            for (hIdx in 0 until minOf(handResult.landmarks().size, 2)) {
                 if (hIdx >= handResult.handedness().size) break
                 val label = handResult.handedness()[hIdx][0].categoryName()
+                val lms   = handResult.landmarks()[hIdx]
                 // "Left" = user left hand → LHAND offset 468 (matches live_winner.py LHAND)
                 // "Right" = user right hand → RHAND offset 522 (matches live_winner.py RHAND)
                 val offset = if (label == "Left") LEFT_HAND_OFFSET else RIGHT_HAND_OFFSET
