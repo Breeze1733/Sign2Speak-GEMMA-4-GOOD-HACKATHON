@@ -190,10 +190,21 @@ private fun LandmarkOverlay(
         val w = size.width
         val h = size.height
 
-        // RAW TEST: zero transformation — lm.x → screen X, lm.y → screen Y
-        // No mirror, no axis swap, no crop compensation.
-        // Observe where landmarks fall vs actual hands to determine correct formula.
-        fun lmToScreen(lm: LandmarkPoint) = Offset(lm.x * w, lm.y * h)
+        // FILL_CENTER — calcul toujours en espace portrait (narrow×tall)
+        // pour être robuste quelle que soit l'orientation du bitmap caméra.
+        val camNarrow = minOf(cameraWidth, cameraHeight).toFloat()  // 720
+        val camTall   = maxOf(cameraWidth, cameraHeight).toFloat()  // 1280
+        val scale = maxOf(w / camNarrow, h / camTall)
+        val dispW = camNarrow * scale   // ex. 1350 sur écran 1080×2400
+        val dispH = camTall   * scale   // ex. 2400
+        val cropX = (dispW - w) / 2f   // ex. 135 px — utilisé pour compenser le crop FILL_CENTER
+
+        // 90° CCW depuis formule précédente : (1-lm.x)→X, lm.y→Y
+        // (1-lm.x) : miroir caméra frontale sur axe X
+        fun lmToScreen(lm: LandmarkPoint) = Offset(
+            (1f - lm.x) * dispW - cropX,
+            lm.y * dispH,
+        )
 
         // Face: lip, nose, eye dots (cyan)
         faceDots.forEach { pt ->

@@ -71,6 +71,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     ) {
         if (imgW > 0 && imgH > 0 && (_state.value.cameraWidth != imgW || _state.value.cameraHeight != imgH)) {
             _state.update { it.copy(cameraWidth = imgW, cameraHeight = imgH) }
+            log("CAM: ${imgW}×${imgH}")
         }
         pipelineScope.launch { processFrame(handResult, faceResult, timestampMs) }
     }
