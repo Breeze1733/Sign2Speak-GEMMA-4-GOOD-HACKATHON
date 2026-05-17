@@ -1,0 +1,41 @@
+{
+  "dataset": "self-collected",
+  "signs": [
+    "D",
+    "HELLO",
+    "L",
+    "MY",
+    "NAME",
+    "O",
+    "U"
+  ],
+  "signs_count": 7,
+  "sequences_per_sign": 30,
+  "frames_per_sequence": 30,
+  "features_per_frame": 298,
+  "label_to_idx": {
+    "D": 0,
+    "HELLO": 1,
+    "L": 2,
+    "MY": 3,
+    "NAME": 4,
+    "O": 5,
+    "U": 6
+  },
+  "idx_to_label": {
+    "0": "D",
+    "1": "HELLO",
+    "2": "L",
+    "3": "MY",
+    "4": "NAME",
+    "5": "O",
+    "6": "U"
+  },
+  "config": {
+    "use_hands": true,
+    "use_pose": true,
+    "use_face": true,
+    "face_subset_only": true,
+    "normalize": true
+  }
+}
