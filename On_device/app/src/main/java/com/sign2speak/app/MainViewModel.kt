@@ -73,6 +73,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private var lastFrameTimeMs        = 0L
     private val fpsSamples             = ArrayDeque<Float>(30)
     private var frameCount             = 0
+    private var lastHandSeenMs         = 0L
 
     init {
         viewModelScope.launch(Dispatchers.IO) { gloss2Text.initialize() }
@@ -137,6 +138,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             glossBuffer.clear()
             lastStableLabel        = ""
             lastTranslatedSentence = ""
+            lastHandSeenMs         = 0L
             _state.update {
                 it.copy(
                     currentSign = "", currentConf = 0f, top3 = emptyList(),
@@ -169,7 +171,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         val currentSign = rec.topLabel
         val currentConf = rec.topConf
 
-        if (currentSign.isNotEmpty() && currentSign != lastStableLabel) {
+        // Seuil 50% : on n'accepte un nouveau signe que s'il est suffisamment confiant.
+        if (currentSign.isNotEmpty() && currentConf >= 0.5f && currentSign != lastStableLabel) {
             if (lastStableLabel.isNotEmpty()) glossBuffer.push(lastStableLabel)
             lastStableLabel = currentSign
         } else if (currentSign.isEmpty() && lastStableLabel.isNotEmpty()) {
@@ -177,7 +180,21 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             lastStableLabel = ""
         }
 
-        glossBuffer.tick()?.takeIf { it.isNotEmpty() }?.let { startTranslation(it) }
+        // Mise à jour du timer "main visible".
+        if (hasHand) {
+            lastHandSeenMs = now
+        } else if (lastHandSeenMs > 0L && now - lastHandSeenMs >= 3_000L) {
+            // Aucune main depuis 3 s → envoyer à Gemma si des mots sont en attente.
+            val glosses = glossBuffer.currentGlosses()
+            if (glosses.isNotEmpty()) {
+                glossBuffer.clear()
+                lastStableLabel = ""
+                lastHandSeenMs  = 0L
+                startTranslation(glosses)
+            } else {
+                lastHandSeenMs = 0L
+            }
+        }
 
         _state.update {
             it.copy(
