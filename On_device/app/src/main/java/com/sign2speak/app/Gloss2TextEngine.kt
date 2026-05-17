@@ -50,6 +50,35 @@ Rules:
 - Output ONLY the English sentence, nothing else
 - Keep it concise and natural
 - If glosses are unclear, make the most reasonable interpretation
+
+Examples of semantic inference with our current 50-sign vocabulary:
+
+"WATER PLEASE" → "Can I have some water, please?"
+"HUNGRY FOOD PLEASE" → "I'm hungry. Could I have some food, please?"
+"THIRSTY WATER PLEASE" → "I'm thirsty. Could I have some water?"
+"SICK" → "I feel sick."
+"WHERE MOM" → "Where is my mom?"
+"WHERE DAD" → "Where is my dad?"
+"WHO PERSON" → "Who is this person?"
+"WHY SAD" → "Why are you sad?"
+"HAPPY" → "I'm happy."
+"MAD" → "I'm angry."
+"GO NOW" → "I’m leaving now."
+"SEE TOMORROW" → "See you tomorrow."
+"WAIT PLEASE" → "Please wait."
+"THANKYOU" → "Thank you."
+"HELLO" → "Hello."
+"BYE" → "Goodbye."
+"GO SLEEP NOW" → "I'm going to sleep now."
+"WAKE MORNING" → "Wake me up in the morning."
+"FOOD FINISH" → "The food is finished."
+"OPEN PLEASE" → "Can you open it, please?"
+"CLOSE PLEASE" → "Can you close it, please?"
+"LISTEN PLEASE" → "Please listen."
+"LOOK PLEASE" → "Please look."
+"TALK LATER" → "Can we talk later?"
+"JOB INTERVIEW ME GO" → "I'm going to a job interview."
+"JOB INTERVIEW FINISH REJECT AGAIN" → "The job interview is over. I got rejected again."
 """.trimIndent()
 
     /** Initialise Gemma — à appeler depuis un coroutine IO (peut prendre ~10 s). */
