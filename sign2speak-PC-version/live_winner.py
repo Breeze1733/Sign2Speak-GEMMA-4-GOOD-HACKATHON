@@ -5,8 +5,9 @@ Adapte le preprocessing du gagnant (118 landmarks, normalisation nez,
 vélocité + accélération = 708 features) pour MediaPipe Tasks en live.
 
 Usage:
-    python live_winner.py --model ./model_winner
-    python live_winner.py --model ./model_winner --threshold 0.3
+    python live_winner.py
+    or
+    python live_winner.py --model ../model_winner
 """
 
 import argparse
@@ -37,8 +38,8 @@ from mediapipe.tasks.python.vision import (
     FaceLandmarker, FaceLandmarkerOptions,
 )
 
-# =============================================================================
-# Configuration du modèle gagnant
+
+# Configuration du modèle 
 # =============================================================================
 
 ROWS_PER_FRAME = 543
@@ -62,7 +63,6 @@ MODELS_DIR = Path(__file__).parent / "models"
 FACE_EVERY_N = 2    # face detector toutes les N frames (réduit à 2 : face = 77/118 landmarks)
 DETECT_SCALE = 0.8  # 0.8 = bon compromis vitesse/robustesse aux mouvements rapides
 
-# =============================================================================
 # Drawing helpers — pur OpenCV (pas de dépendance mediapipe.framework)
 # =============================================================================
 
@@ -144,7 +144,7 @@ def _draw_word_history(image, word_history):
                     cv2.FONT_HERSHEY_SIMPLEX, 0.58, color, thick)
 
 
-# =============================================================================
+
 # Gloss2Text — traduction ASL glose → phrase anglaise via Gemma 4 (Ollama)
 # =============================================================================
 
@@ -341,7 +341,6 @@ class TTSEngine:
         self._queue.put(None)
 
 
-# =============================================================================
 # Assemblage MediaPipe Tasks → format Holistic 543
 # =============================================================================
 
@@ -426,7 +425,6 @@ class HolisticAssembler:
         return holistic, has_hand, hand_result, face_result
 
 
-# =============================================================================
 # Preprocessing (identique au gagnant)
 # =============================================================================
 
@@ -463,7 +461,6 @@ def preprocess_sequence(frames_543):
     return x[0]   # (T, 708)
 
 
-# ============================================ =================================
 # Inférence (appelée dans un thread séparé)
 # =============================================================================
 
@@ -477,7 +474,6 @@ def _run_inference(model, inp_arr, idx_to_label):
     return {"top_idx": top_idx, "top_conf": top_conf, "top3": top3}
 
 
-# =============================================================================
 # Live
 # =============================================================================
 
@@ -816,7 +812,7 @@ def _softmax(x):
 
 def main():
     parser = argparse.ArgumentParser(description="Sign2Speak — Live test modèle gagnant")
-    parser.add_argument("--model",     type=str,   default="./model_winner")
+    parser.add_argument("--model",     type=str,   default="../model_winner")
     parser.add_argument("--threshold", type=float, default=0.2)
     args = parser.parse_args()
     run_live(Path(args.model), args.threshold)
