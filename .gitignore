@@ -42,3 +42,7 @@ desktop.ini
 
 # gemma4_e2b_litertlm on device 
 On_device/gemma4_e2b_litertlm/
+
+#sign2speak-training
+asl_converted/
+asl-signs/  
