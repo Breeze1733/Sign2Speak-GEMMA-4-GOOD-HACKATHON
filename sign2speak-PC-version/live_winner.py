@@ -1,8 +1,8 @@
 """
-Sign2Speak — Live Test pour le modèle gagnant Kaggle
-=====================================================
-Adapte le preprocessing du gagnant (118 landmarks, normalisation nez,
-vélocité + accélération = 708 features) pour MediaPipe Tasks en live.
+Sign2Speak — Live webcam inference with the Kaggle winning model
+================================================================
+Adapts the winner's preprocessing pipeline (118 landmarks, nose normalization,
+velocity + acceleration = 708 features) to MediaPipe Tasks for real-time use.
 
 Usage:
     python live_winner.py
@@ -39,7 +39,7 @@ from mediapipe.tasks.python.vision import (
 )
 
 
-# Configuration du modèle 
+# Model configuration
 # =============================================================================
 
 ROWS_PER_FRAME = 543
@@ -59,11 +59,11 @@ CHANNELS  = 6 * NUM_NODES          # 708
 
 MODELS_DIR = Path(__file__).parent / "models"
 
-# FPS optimisations
-FACE_EVERY_N = 2    # face detector toutes les N frames (réduit à 2 : face = 77/118 landmarks)
-DETECT_SCALE = 0.8  # 0.8 = bon compromis vitesse/robustesse aux mouvements rapides
+# FPS optimizations
+FACE_EVERY_N = 2    # run face detector every N frames (face = 77/118 landmarks)
+DETECT_SCALE = 0.8  # 0.8 = good speed/robustness tradeoff for fast movements
 
-# Drawing helpers — pur OpenCV (pas de dépendance mediapipe.framework)
+# Drawing helpers — pure OpenCV (no mediapipe.framework dependency)
 # =============================================================================
 
 _HAND_CONNECTIONS = [
@@ -74,7 +74,7 @@ _HAND_CONNECTIONS = [
     (13,17),(17,18),(18,19),(19,20),
     (0,17),
 ]
-# couleur par doigt (pouce→auriculaire)
+# color per finger (thumb → pinky)
 _FINGER_COLORS = [
     (0, 176, 255), (0, 255, 118), (255, 176, 0), (255, 0, 176), (176, 0, 255),
 ]
@@ -95,7 +95,7 @@ def draw_hand_landmarks(image, hand_result):
 
 
 def draw_face_landmarks(image, face_result):
-    """Affiche uniquement les 77 points visage utilisés par le modèle."""
+    """Draw only the 77 face landmarks used by the model."""
     if not face_result or not face_result.face_landmarks:
         return
     h, w = image.shape[:2]
@@ -125,13 +125,13 @@ def _draw_word_history(image, word_history):
     x0 = img_w - panel_w - 8
     y0 = img_h // 2 - panel_h // 2
 
-    # fond semi-transparent
+    # semi-transparent background
     overlay = image.copy()
     cv2.rectangle(overlay, (x0, y0), (x0 + panel_w, y0 + panel_h), (15, 15, 15), -1)
     cv2.addWeighted(overlay, 0.55, image, 0.45, 0, image)
     cv2.rectangle(image, (x0, y0), (x0 + panel_w, y0 + panel_h), (80, 80, 80), 1)
 
-    cv2.putText(image, "Historique", (x0 + 6, y0 + 13),
+    cv2.putText(image, "History", (x0 + 6, y0 + 13),
                 cv2.FONT_HERSHEY_SIMPLEX, 0.38, (140, 140, 140), 1)
 
     for i, word in enumerate(reversed(words)):
@@ -145,12 +145,12 @@ def _draw_word_history(image, word_history):
 
 
 
-# Gloss2Text — traduction ASL glose → phrase anglaise via Gemma 4 (Ollama)
+# Gloss2Text — ASL gloss → English sentence via Gemma 4 (Ollama)
 # =============================================================================
 
 _OLLAMA_URL  = "http://localhost:11434/api/generate"
 _OLLAMA_MODEL = "gemma4:e2b"
-_FLUSH_TIMEOUT = 3.0   # secondes de silence avant d'envoyer les glosses
+_FLUSH_TIMEOUT = 3.0   # seconds of silence before flushing glosses
 
 _SYSTEM_PROMPT = """\
 You are an ASL (American Sign Language) interpreter. You receive a sequence of ASL glosses \
@@ -196,29 +196,31 @@ def _call_ollama(glosses: list, style: str) -> str:
         with urllib.request.urlopen(req, timeout=15) as resp:
             return json.loads(resp.read()).get("response", "").strip()
     except urllib.error.URLError:
-        return "[Ollama non disponible]"
+        # Ollama not running — sign recognition still works, translation unavailable
+        return ""
     except Exception as e:
-        return f"[Erreur: {e}]"
+        print(f"[Ollama] Error: {e}")
+        return ""
 
 
 class Gloss2Text:
     def __init__(self):
         self.style        = "friendly"
-        self._glosses     = []          # glosses en cours d'accumulation
-        self._last_time   = None        # horodatage du dernier gloss
-        self._sentence    = ""          # dernière phrase traduite
-        self._pending     = None        # future Ollama en cours
+        self._glosses     = []          # glosses being accumulated
+        self._last_time   = None        # timestamp of the last gloss
+        self._sentence    = ""          # last translated sentence
+        self._pending     = None        # in-flight Ollama future
         self._executor    = ThreadPoolExecutor(max_workers=1)
 
     def push(self, gloss: str):
-        """Ajoute un gloss et réinitialise le timer de silence."""
+        """Add a gloss and reset the silence timer."""
         if not self._glosses or self._glosses[-1] != gloss:
             self._glosses.append(gloss)
         self._last_time = time.time()
 
     def tick(self) -> tuple:
-        """Appelé chaque frame. Retourne (glosses_actuels, phrase_traduite)."""
-        # Récupère la traduction si le thread est terminé
+        """Called every frame. Returns (current_glosses, translated_sentence)."""
+        # Collect result if the background thread is done
         if self._pending is not None and self._pending.done():
             result = self._pending.result()
             if result:
@@ -226,13 +228,13 @@ class Gloss2Text:
                 print(f"  Gemma → {result}")
             self._pending = None
 
-        # Flush si timeout expiré et pas de traduction en cours
+        # Flush if silence timeout expired and no translation in progress
         if (self._glosses
                 and self._last_time is not None
                 and time.time() - self._last_time >= _FLUSH_TIMEOUT
                 and self._pending is None):
             glosses_snapshot = list(self._glosses)
-            print(f"\nGloses : {' | '.join(glosses_snapshot)}  [{self.style}]")
+            print(f"\nGlosses: {' | '.join(glosses_snapshot)}  [{self.style}]")
             self._pending   = self._executor.submit(
                 _call_ollama, glosses_snapshot, self.style
             )
@@ -252,14 +254,14 @@ class Gloss2Text:
         self._glosses   = []
         self._last_time = None
         self._sentence  = ""
-        # n'annule pas le future en cours (thread daemon)
+        # does not cancel in-flight future (daemon thread)
 
     def shutdown(self):
         self._executor.shutdown(wait=False)
 
 
 _PIPER_MODEL = str(MODELS_DIR / "en_US-lessac-medium.onnx")
-_PIPER_RATE  = 22050   # Hz de sortie du modèle lessac-medium
+_PIPER_RATE  = 22050   # output sample rate for lessac-medium
 
 _PIPER_URLS = {
     "en_US-lessac-medium.onnx":
@@ -275,13 +277,13 @@ def _ensure_piper_model():
     for fname, url in _PIPER_URLS.items():
         dest = MODELS_DIR / fname
         if not dest.exists():
-            print(f"  Téléchargement Piper {fname} (~80 Mo)…")
+            print(f"  Downloading Piper voice {fname} (~80 MB)…")
             urllib.request.urlretrieve(url, dest)
             print(f"  ✓ {fname}")
 
 
 class TTSEngine:
-    """Piper TTS (offline, voix neurale) dans un thread dédié."""
+    """Piper TTS (offline neural voice) running in a dedicated thread."""
     def __init__(self):
         self._queue  = queue.Queue()
         self._muted  = False
@@ -293,7 +295,7 @@ class TTSEngine:
         try:
             import sounddevice as sd
         except ImportError:
-            print("[TTS] sounddevice manquant — pip install sounddevice")
+            print("[TTS] sounddevice not found — pip install sounddevice")
             return
 
         while True:
@@ -314,12 +316,12 @@ class TTSEngine:
                         sd.play(audio, samplerate=_PIPER_RATE)
                         sd.wait()
                 except FileNotFoundError:
-                    print("[TTS] Piper non trouvé — pip install piper-tts")
+                    print("[TTS] Piper not found — pip install piper-tts")
                 except Exception as e:
-                    print(f"[TTS] Erreur: {e}")
+                    print(f"[TTS] Error: {e}")
 
     def speak(self, phrase: str):
-        # Vider la queue pour ne pas accumuler des phrases en retard
+        # Drain the queue to avoid queueing stale phrases
         while not self._queue.empty():
             try:
                 self._queue.get_nowait()
@@ -329,7 +331,7 @@ class TTSEngine:
 
     def toggle_mute(self) -> bool:
         self._muted = not self._muted
-        state = "muet" if self._muted else "actif"
+        state = "muted" if self._muted else "active"
         print(f"[TTS] {state}")
         return self._muted
 
@@ -341,7 +343,7 @@ class TTSEngine:
         self._queue.put(None)
 
 
-# Assemblage MediaPipe Tasks → format Holistic 543
+# MediaPipe Tasks assembler → Holistic 543-landmark format
 # =============================================================================
 
 class HolisticAssembler:
@@ -350,7 +352,7 @@ class HolisticAssembler:
         self._pose  = None
         self._face  = None
         self._face_cache   = None
-        self._face_counter = FACE_EVERY_N - 1  # appel dès la 1ère frame
+        self._face_counter = FACE_EVERY_N - 1  # trigger on the very first frame
 
     def __enter__(self):
         self._ensure_models()
@@ -397,7 +399,7 @@ class HolisticAssembler:
 
         holistic = np.full((ROWS_PER_FRAME, 3), np.nan, dtype=np.float32)
 
-        # Face: seulement toutes les FACE_EVERY_N frames
+        # Face: only every FACE_EVERY_N frames (face = 77/118 landmarks, expensive)
         self._face_counter = (self._face_counter + 1) % FACE_EVERY_N
         if self._face_counter == 0:
             self._face_cache = self._face.detect_for_video(mp_image, timestamp_ms)
@@ -407,7 +409,7 @@ class HolisticAssembler:
                 if i < 468:
                     holistic[i] = [lm.x, lm.y, lm.z]
 
-        # Mains (chaque frame)
+        # Hands: every frame
         hand_result = self._hand.detect_for_video(mp_image, timestamp_ms)
         has_hand = False
         if hand_result.hand_landmarks:
@@ -425,7 +427,7 @@ class HolisticAssembler:
         return holistic, has_hand, hand_result, face_result
 
 
-# Preprocessing (identique au gagnant)
+# Preprocessing (identical to the winning solution)
 # =============================================================================
 
 def preprocess_sequence(frames_543):
@@ -461,7 +463,7 @@ def preprocess_sequence(frames_543):
     return x[0]   # (T, 708)
 
 
-# Inférence (appelée dans un thread séparé)
+# Inference (runs in a background thread)
 # =============================================================================
 
 def _run_inference(model, inp_arr, idx_to_label):
@@ -474,11 +476,11 @@ def _run_inference(model, inp_arr, idx_to_label):
     return {"top_idx": top_idx, "top_conf": top_conf, "top3": top3}
 
 
-# Live
+# Live loop
 # =============================================================================
 
 def run_live(model_dir: Path, threshold: float = 0.2):
-    print("📦 Chargement du modèle...")
+    print("📦 Loading model...")
 
     with open(model_dir / "model_meta.json") as f:
         meta = json.load(f)
@@ -588,13 +590,13 @@ def run_live(model_dir: Path, threshold: float = 0.2):
     x   = tf.keras.layers.Dense(num_classes, name="classifier")(x)
     model = tf.keras.Model(inp, x)
     model.load_weights(str(model_dir / "weights.weights.h5"))
-    print(f"   {num_classes} signes, max_len={max_len}, dim={dim}")
+    print(f"   {num_classes} signs, max_len={max_len}, dim={dim}")
 
-    # ─── Buffers ────────────────────────────────────────────────────────────
+    # ─── Buffers ─────────────────────────────────────────────────────────────
     PAD                = -100.0
     frame_buffer       = deque(maxlen=max_len)
     prediction_history = deque(maxlen=8)
-    word_history       = deque(maxlen=7)   # historique des mots confirmés
+    word_history       = deque(maxlen=7)   # history of confirmed words
     last_stable_label  = ""
 
     # Gloss2Text + TTS
@@ -605,27 +607,27 @@ def run_live(model_dir: Path, threshold: float = 0.2):
     current_label      = ""
     current_conf       = 0.0
 
-    # thread pour l'inférence TF (non-bloquant)
+    # background thread for TF inference (non-blocking)
     executor    = ThreadPoolExecutor(max_workers=1)
     infer_future = None
 
     cap = cv2.VideoCapture(0)
     if not cap.isOpened():
-        print("❌ Webcam introuvable")
+        print("❌ Webcam not found")
         return
     cap.set(cv2.CAP_PROP_FRAME_WIDTH,  640)
     cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
     cap.set(cv2.CAP_PROP_FPS, 30)
 
     print(f"\n{'─'*45}")
-    print(f"  Seuil de confiance : {threshold:.0%}")
-    print(f"  Touches :")
+    print(f"  Confidence threshold : {threshold:.0%}")
+    print(f"  Keyboard shortcuts:")
     print(f"    1  → style Professional")
-    print(f"    2  → style Friendly (défaut)")
+    print(f"    2  → style Friendly (default)")
     print(f"    3  → style Simple")
     print(f"    m  → mute / unmute TTS")
-    print(f"    c  → effacer buffer, glosses et traduction")
-    print(f"    q  → quitter")
+    print(f"    c  → clear buffer, glosses and translation")
+    print(f"    q  → quit")
     print(f"{'─'*45}\n")
 
     frame_idx = 0
@@ -638,12 +640,12 @@ def run_live(model_dir: Path, threshold: float = 0.2):
             if not ret:
                 break
 
-            timestamp_ms = frame_idx * 33  # timestamps réguliers = tracking plus stable
+            timestamp_ms = frame_idx * 33  # steady timestamps = more stable tracking
 
             holistic, has_hand, hand_res, face_res = assembler.extract(frame, timestamp_ms)
             frame_buffer.append(holistic)
 
-            # ── Résultat inférence précédente ─────────────────────────────
+            # ── Collect previous inference result ─────────────────────────
             if infer_future is not None and infer_future.done():
                 result       = infer_future.result()
                 infer_future = None
@@ -663,7 +665,7 @@ def run_live(model_dir: Path, threshold: float = 0.2):
                     current_label = ""
                     current_conf  = 0.0
 
-            # ── Soumettre nouvelle inférence (non-bloquant) ───────────────
+            # ── Submit new inference (non-blocking) ───────────────────────
             if infer_future is None and frame_idx % 3 == 0 and len(frame_buffer) >= 10:
                 seq  = np.array(list(frame_buffer), dtype=np.float32)
                 pts  = seq[:, POINT_LANDMARKS, :]
@@ -682,7 +684,7 @@ def run_live(model_dir: Path, threshold: float = 0.2):
                         _run_inference, model, features[np.newaxis, ...], idx_to_label
                     )
 
-            # ── Historique des mots + accumulation glosses ───────────────
+            # ── Word history + gloss accumulation ────────────────────────
             if current_label and current_label != last_stable_label:
                 if last_stable_label:
                     word_history.append(last_stable_label)
@@ -695,12 +697,12 @@ def run_live(model_dir: Path, threshold: float = 0.2):
 
             pending_glosses, translated = g2t.tick()
 
-            # TTS : parle dès qu'une nouvelle phrase arrive
+            # TTS: speak as soon as a new sentence arrives
             if translated and translated != last_translated:
                 last_translated = translated
                 tts.speak(translated)
 
-            # ── Dessin ───────────────────────────────────────────────────
+            # ── Drawing ──────────────────────────────────────────────────
             annotated = frame.copy()
             h, w = annotated.shape[:2]
 
@@ -715,7 +717,7 @@ def run_live(model_dir: Path, threshold: float = 0.2):
             cv2.putText(annotated, f"FPS: {avg_fps:.0f}", (10, 30),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
 
-            status = "MAIN" if has_hand else "---"
+            status = "HAND" if has_hand else "---"
             cv2.putText(annotated, status, (10, 60),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.6,
                         (0, 255, 0) if has_hand else (0, 0, 255), 2)
@@ -724,7 +726,7 @@ def run_live(model_dir: Path, threshold: float = 0.2):
                 cv2.putText(annotated, "...", (10, 85),
                             cv2.FONT_HERSHEY_SIMPLEX, 0.5, (200, 200, 0), 1)
 
-            # Prédiction courante (remontée pour laisser place aux glosses/traduction)
+            # Current prediction (positioned to leave room for glosses/translation)
             if current_label and current_conf >= threshold:
                 c = ((0, 255, 0)   if current_conf > 0.5
                      else (0, 255, 255) if current_conf > 0.3
@@ -734,25 +736,25 @@ def run_live(model_dir: Path, threshold: float = 0.2):
                 cv2.putText(annotated, f"{current_conf:.0%}", (10, h - 70),
                             cv2.FONT_HERSHEY_SIMPLEX, 0.8, c, 2)
 
-            # Glosses accumulées (en attente d'envoi à Ollama)
+            # Accumulated glosses (waiting to be sent to Ollama)
             if pending_glosses:
                 gloss_str = "  ".join(pending_glosses)
                 cv2.putText(annotated, gloss_str, (10, h - 42),
                             cv2.FONT_HERSHEY_SIMPLEX, 0.65, (255, 255, 255), 2)
 
-            # Phrase traduite par Gemma 4
+            # Sentence translated by Gemma 4
             if translated:
-                # fond semi-transparent sur toute la largeur
+                # semi-transparent bar across full width
                 overlay = annotated.copy()
                 cv2.rectangle(overlay, (0, h - 30), (w, h), (0, 0, 0), -1)
                 cv2.addWeighted(overlay, 0.5, annotated, 0.5, 0, annotated)
-                # texte tronqué si trop long
+                # truncate if too long for the frame width
                 max_chars = w // 11
                 display_txt = translated if len(translated) <= max_chars else translated[:max_chars - 1] + "…"
                 cv2.putText(annotated, display_txt, (8, h - 8),
                             cv2.FONT_HERSHEY_SIMPLEX, 0.65, (0, 255, 100), 2)
 
-            # Indicateur de style + mute (coin bas-droit)
+            # Style indicator + mute status (bottom-right corner)
             cv2.putText(annotated, f"[{g2t.style[0].upper()}]", (w - 45, h - 8),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.45, (150, 150, 150), 1)
             mute_label = "MUT" if tts.muted else "SPK"
@@ -760,7 +762,7 @@ def run_live(model_dir: Path, threshold: float = 0.2):
             cv2.putText(annotated, mute_label, (w - 90, h - 8),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.45, mute_color, 1)
 
-            # Spinner Ollama en cours
+            # Ollama spinner while waiting for translation
             if g2t.is_loading:
                 cx, cy  = w - 20, h - 60
                 r       = 10
@@ -770,12 +772,12 @@ def run_live(model_dir: Path, threshold: float = 0.2):
                 cv2.putText(annotated, "AI", (cx - 7, cy + 4),
                             cv2.FONT_HERSHEY_SIMPLEX, 0.3, (0, 200, 255), 1)
 
-            # Top 3
+            # Top 3 predictions
             for i, (label, conf) in enumerate(top3):
                 cv2.putText(annotated, f"{label}: {conf:.0%}", (w - 250, 30 + i * 30),
                             cv2.FONT_HERSHEY_SIMPLEX, 0.6, (200, 200, 200), 2)
 
-            # Historique
+            # Word history panel
             _draw_word_history(annotated, word_history)
 
             cv2.imshow("Sign2Speak_Live", annotated)
@@ -811,7 +813,7 @@ def _softmax(x):
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Sign2Speak — Live test modèle gagnant")
+    parser = argparse.ArgumentParser(description="Sign2Speak — Live webcam inference")
     parser.add_argument("--model",     type=str,   default="../model_winner")
     parser.add_argument("--threshold", type=float, default=0.2)
     args = parser.parse_args()
