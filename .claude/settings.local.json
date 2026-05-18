@@ -12,7 +12,10 @@
       "Bash(unzip -l app-debug.apk)",
       "Bash(adb -s 32111JEHN12730 install -r -t \"c:/Users/Ludo/dev/Hackathon/Sign2Speak-GEMMA-4-GOOD-HACKATHON/On_device/app/build/intermediates/apk/debug/app-debug.apk\")",
       "Bash(adb -s 32111JEHN12730 install -r -t app/build/intermediates/apk/debug/app-debug.apk)",
-      "Bash(adb devices *)"
+      "Bash(adb devices *)",
+      "Bash(JAVA_HOME=\"C:\\\\Program Files\\\\Android\\\\Android Studio\\\\jbr\" ./gradlew installDebug)",
+      "Bash(adb shell *)",
+      "Bash(adb uninstall *)"
     ]
   }
 }
