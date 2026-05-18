@@ -1,10 +1,10 @@
 """
-Sign2Speak — Pré-conversion Parquet → NPZ
+Sign2Speak — Parquet → NPZ pre-conversion
 ==========================================
-Lit tous les Parquet une seule fois, les convertit en arrays numpy
-au format (n_frames, 543, 3) et les sauvegarde dans un seul fichier .npz.
+Reads all Parquet files once, converts them to numpy arrays
+in (n_frames, 543, 3) format and saves them to individual .npy files.
 
-L'entraînement sera ensuite instantané (pas de lecture Parquet à chaque epoch).
+Training is then instant — no Parquet reads per epoch.
 
 Usage:
     python3 preconvert.py --data-dir ./asl-signs --output ./asl_data.npz --max-signs 50
@@ -20,7 +20,7 @@ import pandas as pd
 
 ROWS_PER_FRAME = 543
 
-# Signes MVP
+# MVP signs
 MVP_SIGNS = [
     "hello", "bye", "thankyou", "please", "yes", "no",
     "happy", "sad", "mad", "like", "hate", "fine", "sick", "hungry", "thirsty",
@@ -36,7 +36,7 @@ MVP_SIGNS = [
 
 
 def load_parquet(path):
-    """Charge un Parquet long → array (n_frames, 543, 3)."""
+    """Load a long-format Parquet file → array (n_frames, 543, 3)."""
     df = pd.read_parquet(path)
     if df.empty:
         return None
@@ -49,7 +49,7 @@ def load_parquet(path):
 
     type_offsets = {'face': 0, 'left_hand': 468, 'pose': 489, 'right_hand': 522}
 
-    # Vectorisé pour la vitesse
+    # Vectorized for speed
     fr_indices = df['frame'].map(frame_to_idx).values
     types = df['type'].values
     lm_indices = df['landmark_index'].values.astype(int)
@@ -72,7 +72,7 @@ def load_parquet(path):
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Pré-conversion Parquet → NPZ")
+    parser = argparse.ArgumentParser(description="Parquet → NPZ pre-conversion")
     parser.add_argument('--data-dir', type=str, required=True)
     parser.add_argument('--output', type=str, default='./asl_data.npz')
     parser.add_argument('--max-signs', type=int, default=50)
@@ -81,14 +81,14 @@ def main():
 
     data_dir = Path(args.data_dir)
 
-    # Charger metadata
+    # Load metadata
     train_df = pd.read_csv(data_dir / 'train.csv')
     with open(data_dir / 'sign_to_prediction_index_map.json') as f:
         sign_map = json.load(f)
 
-    print(f"📊 {len(train_df)} vidéos, {len(sign_map)} signes")
+    print(f"📊 {len(train_df)} videos, {len(sign_map)} signs")
 
-    # Sélectionner les signes
+    # Select signs
     available = set(sign_map.keys())
     selected = [s for s in MVP_SIGNS if s in available]
     if len(selected) < args.max_signs:
@@ -97,15 +97,15 @@ def main():
                 selected.append(s)
     selected = selected[:args.max_signs]
     label_to_idx = {s: i for i, s in enumerate(sorted(selected))}
-    print(f"   {len(selected)} signes sélectionnés")
+    print(f"   {len(selected)} signs selected")
 
-    # Filtrer
+    # Filter
     filtered = train_df[train_df['sign'].isin(selected)].copy()
     parts = [filtered[filtered['sign'] == s].head(args.max_per_sign) for s in selected]
     filtered = pd.concat(parts)
-    print(f"   {len(filtered)} vidéos à convertir")
+    print(f"   {len(filtered)} videos to convert")
 
-    # Split par participant
+    # Split by participant (prevents data leakage)
     random.seed(42)
     participants = filtered['participant_id'].unique().tolist()
     random.shuffle(participants)
@@ -113,8 +113,8 @@ def main():
     test_p = set(participants[:max(1, int(n_p * 0.15))])
     val_p = set(participants[max(1, int(n_p * 0.15)):max(2, int(n_p * 0.30))])
 
-    # Convertir
-    all_data = []  # liste de (array, label, split)
+    # Convert
+    all_data = []  # list of (array, label, split)
     errors = 0
 
     for i, (_, row) in enumerate(filtered.iterrows()):
@@ -148,24 +148,22 @@ def main():
             continue
 
         if (i + 1) % 500 == 0:
-            print(f"   [{i+1}/{len(filtered)}] {len(all_data)} convertis | Erreurs: {errors}")
+            print(f"   [{i+1}/{len(filtered)}] {len(all_data)} converted | Errors: {errors}")
 
-    print(f"\n   Total: {len(all_data)} séquences | Erreurs: {errors}")
+    print(f"\n   Total: {len(all_data)} sequences | Errors: {errors}")
 
-    # Sauvegarder — on ne peut pas mettre des arrays de tailles différentes
-    # dans un seul numpy array, donc on sauvegarde séparément
+    # Save — arrays have variable length so we save them individually
     labels = np.array([d[1] for d in all_data], dtype=np.int32)
     splits = np.array([d[2] for d in all_data], dtype=np.int32)
 
-    # Sauvegarder chaque séquence individuellement dans un dossier
     output_dir = Path(args.output)
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    # Sauvegarder les séquences
+    # Save sequences
     for idx, (arr, label, split) in enumerate(all_data):
         np.save(output_dir / f"seq_{idx:05d}.npy", arr)
 
-    # Sauvegarder l'index
+    # Save index
     index = {
         'n_sequences': len(all_data),
         'labels': labels.tolist(),
@@ -182,9 +180,9 @@ def main():
     train_count = sum(1 for s in splits if s == 0)
     val_count = sum(1 for s in splits if s == 1)
     test_count = sum(1 for s in splits if s == 2)
-    print(f"\n✅ Sauvegardé dans {output_dir}/")
+    print(f"\n✅ Saved to {output_dir}/")
     print(f"   Train: {train_count} | Val: {val_count} | Test: {test_count}")
-    print(f"   {len(all_data)} fichiers .npy + index.json")
+    print(f"   {len(all_data)} .npy files + index.json")
 
 
 if __name__ == "__main__":

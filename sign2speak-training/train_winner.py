@@ -1,8 +1,8 @@
 """
-Sign2Speak — Entraînement architecture gagnante (v2 — données pré-converties)
-==============================================================================
-Lit les .npy pré-convertis (format 543×3 par frame) depuis asl_converted/.
-Plus de lecture Parquet = entraînement instantané.
+Sign2Speak — Winning architecture training (v2 — pre-converted data)
+=====================================================================
+Reads pre-converted .npy files (543×3 per frame) from asl_converted/.
+No Parquet reads = instant training.
 
 Usage:
     python3 train_winner.py --data-dir ./asl_converted --output ./model_winner --epochs 100
@@ -17,7 +17,7 @@ from pathlib import Path
 import numpy as np
 import tensorflow as tf
 
-# =============================================================================
+
 # Seed
 # =============================================================================
 def seed_everything(seed=42):
@@ -26,8 +26,8 @@ def seed_everything(seed=42):
     np.random.seed(seed)
     tf.random.set_seed(seed)
 
-# =============================================================================
-# Landmarks (identiques au gagnant)
+ 
+# Landmarks (identical to the winning solution)
 # =============================================================================
 ROWS_PER_FRAME = 543
 PAD = -100.0
@@ -49,8 +49,7 @@ POINT_LANDMARKS = LIP + LHAND + RHAND + NOSE + REYE + LEYE
 NUM_NODES = len(POINT_LANDMARKS)  # 118
 CHANNELS = 6 * NUM_NODES           # 708
 
-# =============================================================================
-# Preprocessing (identique au gagnant)
+# Preprocessing (identical to the winning solution)
 # =============================================================================
 def tf_nan_mean(x, axis=0, keepdims=False):
     return tf.reduce_sum(tf.where(tf.math.is_nan(x), tf.zeros_like(x), x), axis=axis, keepdims=keepdims) / \
@@ -83,8 +82,7 @@ def preprocess(coords):
     x = tf.where(tf.math.is_nan(x), tf.constant(0., x.dtype), x)
     return x[0]
 
-# =============================================================================
-# Augmentations (du gagnant)
+# Augmentations (from the winning solution)
 # =============================================================================
 def interp1d_(x, target_len):
     target_len = tf.maximum(1, target_len)
@@ -142,8 +140,7 @@ def augment_fn(x, max_len):
         x = temporal_mask(x)
     return x
 
-# =============================================================================
-# Modèle (identique au gagnant)
+# Model (identical to the winning solution)
 # =============================================================================
 class ECA(tf.keras.layers.Layer):
     def __init__(self, kernel_size=5, **kwargs):
@@ -242,8 +239,7 @@ def get_model(num_classes, max_len=64, dim=192):
     x = tf.keras.layers.Dense(num_classes, name='classifier')(x)
     return tf.keras.Model(inp, x)
 
-# =============================================================================
-# Dataset depuis .npy pré-convertis
+# Dataset from pre-converted .npy files
 # =============================================================================
 def create_dataset(npy_dir, indices, labels, num_classes, max_len=64,
                    augment=False, batch_size=64, shuffle=False):
@@ -271,7 +267,7 @@ def create_dataset(npy_dir, indices, labels, num_classes, max_len=64,
     )
 
     def process(coords, label):
-        # Filtrer les frames entièrement NaN
+        # Drop frames where all landmarks are NaN
         pts = tf.gather(coords, POINT_LANDMARKS, axis=1)
         mask = tf.math.logical_not(tf.reduce_all(tf.math.is_nan(pts), axis=[-2, -1]))
         coords = tf.boolean_mask(coords, mask, axis=0)
@@ -293,12 +289,11 @@ def create_dataset(npy_dir, indices, labels, num_classes, max_len=64,
                           drop_remainder=True)
     return ds.prefetch(tf.data.AUTOTUNE)
 
-# =============================================================================
 # Main
 # =============================================================================
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument('--data-dir', type=str, required=True, help='Dossier asl_converted/')
+    parser.add_argument('--data-dir', type=str, required=True, help='asl_converted/ directory')
     parser.add_argument('--output', type=str, default='./model_winner')
     parser.add_argument('--epochs', type=int, default=100)
     parser.add_argument('--batch-size', type=int, default=64)
@@ -347,15 +342,15 @@ def main():
     val_ds = create_dataset(data_dir, val_idx, val_labels, num_classes,
                              args.max_len, augment=False, batch_size=args.batch_size)
 
-    # Test pipeline
+    # Sanity check
     for x, y in train_ds.take(1):
         print(f"   Batch: x={x.shape}, y={y.shape}")
         break
 
-    # Modèle
+    # Model
     model = get_model(num_classes, args.max_len, args.dim)
     n_params = sum(p.numpy().size for p in model.trainable_variables)
-    print(f"🏗️  Modèle: {n_params:,} paramètres")
+    print(f"🏗️  Model: {n_params:,} parameters")
 
     steps = args.epochs * len(train_idx) // args.batch_size
     lr_schedule = tf.keras.optimizers.schedules.CosineDecay(args.lr, steps, alpha=1e-6)
@@ -374,11 +369,11 @@ def main():
         tf.keras.callbacks.CSVLogger(str(output_dir / 'training_log.csv')),
     ]
 
-    print(f"\n🚀 Entraînement ({args.epochs} epochs)...")
+    print(f"\n🚀 Training ({args.epochs} epochs)...")
     model.fit(train_ds, validation_data=val_ds, epochs=args.epochs, callbacks=callbacks, verbose=2)
 
     # Test
-    print(f"\n📊 Test...")
+    print(f"\n📊 Evaluating on test set...")
     test_ds = create_dataset(data_dir, test_idx, test_labels, num_classes,
                               args.max_len, augment=False, batch_size=args.batch_size)
     results = model.evaluate(test_ds, verbose=0)
@@ -396,7 +391,7 @@ def main():
     with open(output_dir / 'model_meta.json', 'w') as f:
         json.dump(meta, f, indent=2)
 
-    print(f"💾 Sauvegardé dans {output_dir}/")
+    print(f"💾 Saved to {output_dir}/")
 
 if __name__ == "__main__":
     main()

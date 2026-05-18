@@ -1,67 +1,109 @@
+# Gemma Sign2Speak v1.0
 
-# Creat venv
-python -m venv sign2speak_venv
-or
-py -m venv sign2speak_venv
+**Real-time American Sign Language (ASL) interpreter running fully on-device.**
 
-# Activate  venv
-.\sign2speak_venv\Scripts\Activate
+---
 
-# Installer les dépendances
-python -m pip install -r requirements.txt
-# deactivate
-deactivate
+## What it does
 
-# freeze dependance 
-python -m pip freeze > requirements.txt 
+- Detects hand & face landmarks via **MediaPipe** — no internet needed
+- Recognizes ASL signs with a custom **TFLite classifier** (Conv1D + Transformer, trained on Kaggle ISLR)
+- Translates sign sequences into natural English sentences using **Gemma 4 E2B on-device**
+- Sign2Speak” is currently limited to 50 words, but it can be retrained with the full database to reach a vocabulary of 250 words.
+- Speaks the result aloud via **Android TTS**
+- Sign2Speak also includes a microphone feature that records and transcribes the speaker’s voice into written text displayed on the screen. This allows signers to understand the other person and enables a complete two-way conversation.
 
-# For lunch the Projet
-py .\keypoint_extractor.py
+---
 
-# For install the dataset 
- python dataset_pipeline.py --download --data-dir ./data
-# For explore dataset and creat train/test/val split 
-python dataset_pipeline.py --explore --data-dir ./data
+## Install
 
-# For lunch with 5 exemple 
-python dataset_pipeline.py --extract --data-dir ./data --output ./keypoints --max-signs 5 --max-videos-per-sign 5
-# For lunch keypoints with 50 exemples and all videos for eatch exemples 
-python dataset_pipeline.py --extract --data-dir ./data --output ./keypoints_v2 --max-signs 50 --max-videos-per-sign 999
-# For lunch the train data with LSTM
-python train_classifier.py --data ./keypoints --output ./model
+1. Download `Sign2Speak.apk` from the [Releases](https://github.com/Pirodax/Sign2Speak-GEMMA-4-GOOD-HACKATHON/releases) page
+2. On your Android device: **Settings → Apps → Special app access → Install unknown apps** → allow your browser
+3. Open the APK and tap **Install**
+4. Launch **Sign2Speak**
+5. On first launch, tap **"Download Gemma model"** (2.58 GB — use Wi-Fi)
+6. Done — works **fully offline** after that
 
-# for lunch live model
-python live_test.py --model ./model
+> Tested on **Pixel 7a (Android 13)** — 8 GB RAM recommended
+
+See [README_INSTALL.md](README_INSTALL.md) for ADB fallback instructions and usage details.
+
+---
+
+## Tech stack
+
+| Layer | Technology |
+|---|---|
+| UI | Kotlin + Jetpack Compose |
+| Landmark detection | MediaPipe Tasks (hand + face landmarker) |
+| Sign classifier | TensorFlow Lite (custom Conv1D + Transformer) |
+| On-device LLM | LiteRT-LM + Gemma 4 E2B (2.58 GB, downloaded at first launch) |
+| TTS | Android TextToSpeech |
+
+> This app uses **Gemma 4** by Google, subject to the [Gemma Terms of Use](https://ai.google.dev/gemma/terms). See [NOTICE_GEMMA.txt](NOTICE_GEMMA.txt).
+
+---
+
+## Full pipeline
+
+```
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  TRAINING  (sign2speak-training/)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  Kaggle ISLR dataset (40 GB, ~94k Parquet files)
+            │
+            ▼  preconvert.py
+  asl_converted/   (.npy sequences, 543×3 landmarks)
+            │
+            ▼  train_winner.py
+  model_winner/    (Keras weights, Conv1D + Transformer)
+            │
+            ▼  convert_to_tflite.py
+  classifier.tflite  →  On_device/app/src/main/assets/
 
 
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  PHASE A — PC prototype  (sign2speak-PC-version/)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-python live_winner.py --model ./model_winner
-----
-# For data already ready
-pip install kaggle
-kaggle competitions download -c asl-signs
-
-
-
-
-
-
-# for lunch live_winner best model 
-
-python live_winner.py --model ./model_winner
-
-
-
-# pour installer le modele 
-https://ai.google.dev/edge/litert-lm/android?hl=fr
-
-Commande pour installer le modèle :
+  Webcam (30 fps)
+    │
+    ▼  MediaPipe Tasks  (hand + face, Python)
+  543 landmarks / frame
+    │
+    ▼  Sliding window → preprocess → TF model
+  Predicted sign  (50 classes, confidence ≥ 20%)
+    │
+    ▼  Gloss buffer  (3 s silence → flush)
+  HELLO  THANK-YOU  NAME
+    │
+    ▼  Ollama  (local HTTP :11434)
+       gemma4:e2b
+    │
+    ▼  Piper TTS  (offline neural voice)
+  "Hi, my name is …"
 
 
-# Crée le dossier si nécessaire (l'app doit être installée d'abord)
-adb shell mkdir -p /sdcard/Android/data/com.sign2speak.app/files/
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  PHASE B — Android app  (On_device/)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-# Push le modèle (2.58 GB — prend ~2-5 min selon le câble)
-adb push gemma-4-E2B-it.litertlm /sdcard/Android/data/com.sign2speak.app/files/
-Sans modèle, l'app fonctionne normalement en fallback (glosses → texte direct). Avec le modèle présent, Gemma 4 E2B chargera en arrière-plan au démarrage et sera prêt avant le premier signe.
-adb shell ls -lh /sdcard/Android/data/com.sign2speak.app/files/
+  Camera (CameraX)
+    │
+    ▼  MediaPipe Tasks  (hand + face, on-device)
+  543 landmarks / frame
+    │
+    ▼  Sliding window → preprocess → TFLite interpreter
+  Predicted sign  (confidence ≥ 50%)
+    │
+    ▼  Gloss buffer  (5 s no hand → flush)
+  HELLO  THANK-YOU  NAME
+    │
+    ▼  LiteRT-LM
+       Gemma 4 E2B  (2.58 GB, on-device, fully offline)
+    │
+    ▼  Android TextToSpeech
+  "Hi, my name is …"
+```
+

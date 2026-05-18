@@ -1,16 +1,16 @@
 """
-convert_to_tflite.py — Convertit le modèle gagnant Keras vers TFLite (.tflite)
-pour l'application Android Sign2Speak.
+convert_to_tflite.py — Converts the winning Keras model to TFLite (.tflite)
+for the Sign2Speak Android application.
 
 Usage:
     python convert_to_tflite.py
 
-Sortie:
+Output:
     On_device/app/src/main/assets/classifier.tflite       (float32 + SELECT_TF_OPS)
-    On_device/app/src/main/assets/classifier_int8.tflite  (quantifié INT8, plus léger)
-    On_device/app/src/main/assets/model_meta.json         (copie des métadonnées)
+    On_device/app/src/main/assets/classifier_int8.tflite  (INT8 quantized, smaller)
+    On_device/app/src/main/assets/model_meta.json         (copy of model metadata)
 
-Pré-requis:
+Requirements:
     pip install tensorflow>=2.16.0
 """
 
@@ -20,13 +20,13 @@ import os
 import numpy as np
 from pathlib import Path
 
-# ─── Chemins ────────────────────────────────────────────────────────────────
+# ─── Paths ───────────────────────────────────────────────────────────────────
 ROOT_DIR   = Path(__file__).parent
 MODEL_DIR  = ROOT_DIR / "model_winner"
 ASSETS_DIR = ROOT_DIR / "On_device" / "app" / "src" / "main" / "assets"
 ASSETS_DIR.mkdir(parents=True, exist_ok=True)
 
-# ─── Métadonnées ─────────────────────────────────────────────────────────────
+# ─── Metadata ────────────────────────────────────────────────────────────────
 with open(MODEL_DIR / "model_meta.json") as f:
     meta = json.load(f)
 
@@ -37,7 +37,7 @@ dim         = meta.get("dim", 192)
 
 print(f"num_classes={num_classes}, max_len={max_len}, channels={CHANNELS}, dim={dim}")
 
-# ─── Architecture (identique à live_winner.py) ───────────────────────────────
+# ─── Architecture (identical to live_winner.py) ───────────────────────────────
 import tensorflow as tf
 
 class ECA(tf.keras.layers.Layer):
@@ -176,8 +176,8 @@ def TransformerBlock(dim=256, num_heads=4, expand=4, attn_dropout=0.2,
     return apply
 
 
-# ─── Construction du modèle ──────────────────────────────────────────────────
-print("Reconstruction de l'architecture...")
+# ─── Build model ─────────────────────────────────────────────────────────────
+print("Rebuilding architecture...")
 ks  = 17
 inp = tf.keras.Input((max_len, CHANNELS))
 x   = tf.keras.layers.Masking(mask_value=-100.0)(inp)
@@ -197,19 +197,19 @@ x   = tf.keras.layers.Dropout(0.5)(x)
 x   = tf.keras.layers.Dense(num_classes, name="classifier")(x)
 model = tf.keras.Model(inp, x)
 
-# Chargement des poids
+# Load weights
 weights_path = str(MODEL_DIR / "weights.weights.h5")
-print(f"Chargement des poids depuis {weights_path}...")
+print(f"Loading weights from {weights_path}...")
 model.load_weights(weights_path)
-print(f"Modèle chargé : {model.count_params():,} paramètres")
+print(f"Model loaded: {model.count_params():,} parameters")
 
-# ─── Test rapide de sanity check ─────────────────────────────────────────────
+# ─── Quick sanity check ───────────────────────────────────────────────────────
 dummy = np.random.randn(1, max_len, CHANNELS).astype(np.float32)
 out   = model(dummy, training=False).numpy()
-print(f"Sanity check : shape_out={out.shape}, max_prob={float(np.max(tf.nn.softmax(out[0]))):.3f}")
+print(f"Sanity check: shape_out={out.shape}, max_prob={float(np.max(tf.nn.softmax(out[0]))):.3f}")
 
-# ─── Conversion TFLite float32 + SELECT_TF_OPS ───────────────────────────────
-print("\nConversion TFLite (float32 + SELECT_TF_OPS)...")
+# ─── TFLite float32 conversion + SELECT_TF_OPS ───────────────────────────────
+print("\nConverting to TFLite (float32 + SELECT_TF_OPS)...")
 converter = tf.lite.TFLiteConverter.from_keras_model(model)
 converter.target_spec.supported_ops = [
     tf.lite.OpsSet.TFLITE_BUILTINS,
@@ -222,18 +222,17 @@ out_path = ASSETS_DIR / "classifier.tflite"
 with open(out_path, "wb") as f:
     f.write(tflite_model)
 size_mb = os.path.getsize(out_path) / 1e6
-print(f"  → {out_path}  ({size_mb:.1f} Mo)")
+print(f"  → {out_path}  ({size_mb:.1f} MB)")
 
-# ─── Conversion TFLite INT8 quantifié ────────────────────────────────────────
-print("\nConversion TFLite INT8 (représentative dataset)...")
+# ─── INT8 quantized TFLite conversion ────────────────────────────────────────
+print("\nConverting to TFLite INT8 (representative dataset)...")
 
-# Dataset représentatif : bruit gaussien + séquences paddées réalistes
+# Representative dataset: Gaussian noise + realistic padded sequences
 def representative_dataset_gen():
-    # Quelques patterns réalistes
     rng = np.random.default_rng(42)
     for _ in range(100):
         seq = rng.standard_normal((1, max_len, CHANNELS)).astype(np.float32)
-        # Simuler du padding
+        # Simulate padding
         pad_len = rng.integers(0, 30)
         seq[0, max_len - pad_len:] = -100.0
         yield [seq]
@@ -245,8 +244,8 @@ converter_int8.target_spec.supported_ops = [
     tf.lite.OpsSet.TFLITE_BUILTINS_INT8,
     tf.lite.OpsSet.SELECT_TF_OPS,
 ]
-converter_int8.inference_input_type  = tf.float32   # garder float32 en entrée
-converter_int8.inference_output_type = tf.float32   # garder float32 en sortie
+converter_int8.inference_input_type  = tf.float32   # keep float32 input
+converter_int8.inference_output_type = tf.float32   # keep float32 output
 converter_int8._experimental_lower_tensor_list_ops = False
 
 try:
@@ -255,18 +254,18 @@ try:
     with open(out_int8, "wb") as f:
         f.write(tflite_int8)
     size_int8 = os.path.getsize(out_int8) / 1e6
-    print(f"  → {out_int8}  ({size_int8:.1f} Mo)")
+    print(f"  → {out_int8}  ({size_int8:.1f} MB)")
 except Exception as e:
-    print(f"  [WARN] Quantification INT8 échouée : {e}")
-    print("  Le modèle float32 sera utilisé à la place.")
+    print(f"  [WARN] INT8 quantization failed: {e}")
+    print("  The float32 model will be used instead.")
 
-# ─── Copie model_meta.json ───────────────────────────────────────────────────
+# ─── Copy model_meta.json ─────────────────────────────────────────────────────
 meta_dst = ASSETS_DIR / "model_meta.json"
 shutil.copy(MODEL_DIR / "model_meta.json", meta_dst)
-print(f"\nCopie model_meta.json → {meta_dst}")
+print(f"\nCopied model_meta.json → {meta_dst}")
 
-# ─── Vérification rapide du TFLite ───────────────────────────────────────────
-print("\nVérification du modèle TFLite...")
+# ─── Quick TFLite verification ────────────────────────────────────────────────
+print("\nVerifying TFLite model...")
 interp = tf.lite.Interpreter(model_path=str(out_path))
 interp.allocate_tensors()
 inp_det = interp.get_input_details()[0]
@@ -278,13 +277,13 @@ test_in = dummy.copy()
 interp.set_tensor(inp_det['index'], test_in)
 interp.invoke()
 tflite_out = interp.get_tensor(out_det['index'])
-print(f"  Prédiction TFLite : classe={int(np.argmax(tflite_out[0]))}")
+print(f"  TFLite prediction: class={int(np.argmax(tflite_out[0]))}")
 
-print("\nConversion terminée avec succès.")
-print(f"Assets disponibles dans : {ASSETS_DIR}")
+print("\nConversion completed successfully.")
+print(f"Assets available in: {ASSETS_DIR}")
 print()
-print("RAPPEL — Placez aussi dans On_device/app/src/main/assets/ :")
+print("REMINDER — Also place in On_device/app/src/main/assets/:")
 print("  hand_landmarker.task  (https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/latest/hand_landmarker.task)")
 print("  face_landmarker.task  (https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/latest/face_landmarker.task)")
 print()
-print("Pour Gemma 4 (LLM), placez le fichier .gguf sur l'appareil Android dans /sdcard/gemma4-2b-it-q4.gguf")
+print("For Gemma 4 (LLM), the model is downloaded at runtime by the app via DownloadManager.")
