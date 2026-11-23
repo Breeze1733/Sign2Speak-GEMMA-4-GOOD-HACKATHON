@@ -1,0 +1,5 @@
+# Media and large binaries stay out of git; only the manifest/readme are tracked.
+*
+!.gitignore
+!README.md
+!manifest.csv

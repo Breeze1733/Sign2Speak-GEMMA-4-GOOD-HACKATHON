@@ -1,0 +1,2 @@
+clip_id,video,pack,signs,style,fps,resolution,notes
+asl_test_hello_hungry_water_thankyou,82ced2f3328029c4d059fa5ed89aa337.mp4,asl_test_hello_hungry_water_thankyou.bin,"HELLO HUNGRY WATER THANKYOU",friendly,30,640x480,"4 different signers, montage with hard cuts ~every 4s; ground-truth order inferred from filename, STILL UNCONFIRMED; PC harness 2026-11-23 recognized HELLO@1.8s HUNGRY@4.8s PLEASE@7.1s WATER@9.6s (mismatch with filename: 3rd and 4th differ); last scene 12-16s hands out of frame, no gloss; pack pixel-identical to video frame 0, not mirrored"
