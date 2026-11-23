@@ -16,6 +16,7 @@ import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -36,7 +37,7 @@ private val Red    = Color(0xFFEF5350)
 private val Scrim  = Color(0xFF1E1E1E)
 
 @Composable
-fun ModelDownloadScreen(viewModel: DownloadViewModel) {
+fun ModelDownloadScreen(viewModel: DownloadViewModel, onSkip: () -> Unit = {}) {
     val state by viewModel.downloadState.collectAsState()
 
     Box(
@@ -79,8 +80,8 @@ fun ModelDownloadScreen(viewModel: DownloadViewModel) {
                 verticalArrangement = Arrangement.spacedBy(8.dp),
             ) {
                 Text("Gemma 4 E2B — on-device LLM", color = Color.White, fontSize = 16.sp, fontWeight = FontWeight.SemiBold)
-                Text("2.58 GB · required for sign-to-text translation", color = Gray, fontSize = 13.sp, textAlign = TextAlign.Center)
-                Text("Wi-Fi recommended", color = Gray, fontSize = 12.sp)
+                Text("2.58 GB · needed for on-device translation (P0)", color = Gray, fontSize = 13.sp, textAlign = TextAlign.Center)
+                Text("Remote P1 can run without it", color = Gray, fontSize = 12.sp)
             }
 
             Spacer(Modifier.height(8.dp))
@@ -137,6 +138,17 @@ fun ModelDownloadScreen(viewModel: DownloadViewModel) {
                         Text("Retry", color = Color.White, fontSize = 16.sp, fontWeight = FontWeight.Bold)
                     }
                 }
+            }
+
+            TextButton(
+                onClick  = onSkip,
+                modifier = Modifier.fillMaxWidth(),
+            ) {
+                Text(
+                    "Skip — recognition / remote P1 only",
+                    color    = Gray,
+                    fontSize = 13.sp,
+                )
             }
 
             Spacer(Modifier.height(24.dp))

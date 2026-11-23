@@ -6,6 +6,13 @@ plugins {
 
 val timingEnabled = providers.gradleProperty("sign2speakTiming").orNull == "true"
 
+// P1 remote gloss-to-text defaults (overridable at runtime in the app's CFG dialog).
+val remoteUrl = providers.gradleProperty("s2sRemoteUrl")
+    .orElse("http://121.41.19.165:8080").get()
+val remoteToken = providers.gradleProperty("s2sRemoteToken").orElse("").get()
+val remoteModelVersion = providers.gradleProperty("s2sRemoteModel")
+    .orElse("gemma-4-E2B-it.litertlm").get()
+
 android {
     namespace = "com.sign2speak.app"
     compileSdk = 36
@@ -14,6 +21,9 @@ android {
         applicationId = if (timingEnabled) "com.sign2speak.app.perf" else "com.sign2speak.app"
         manifestPlaceholders["appLabel"] = if (timingEnabled) "Sign2Speak Timing" else "@string/app_name"
         buildConfigField("boolean", "TIMING_ENABLED", timingEnabled.toString())
+        buildConfigField("String", "REMOTE_URL", "\"$remoteUrl\"")
+        buildConfigField("String", "REMOTE_TOKEN", "\"$remoteToken\"")
+        buildConfigField("String", "REMOTE_MODEL_VERSION", "\"$remoteModelVersion\"")
         minSdk = 29
         targetSdk = 36
         versionCode = 1

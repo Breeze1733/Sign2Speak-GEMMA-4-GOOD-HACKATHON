@@ -25,6 +25,7 @@
         android:supportsRtl="true"
         android:theme="@style/Theme.Sign2SpeakOnDevice"
         android:largeHeap="true"
+        android:usesCleartextTraffic="true"
         tools:targetApi="31">
 
         <!-- LiteRT-LM GPU backend -->

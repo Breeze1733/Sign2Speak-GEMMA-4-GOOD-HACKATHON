@@ -16,8 +16,12 @@ import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import org.json.JSONArray
 import org.json.JSONObject
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import java.io.File
+import java.util.UUID
 import java.util.concurrent.Executors
+import java.util.concurrent.atomic.AtomicLong
 
 // ─── History entry ────────────────────────────────────────────────────────────
 
@@ -38,6 +42,11 @@ data class AppState(
     val isMuted: Boolean = false,
     val style: String = "friendly",
     val isTranslating: Boolean = false,
+    val translationMode: String = "local",   // local (P0) | remote (P1)
+    val remoteUrl: String = "",
+    val remoteHasToken: Boolean = false,
+    val lastSource: String = "",             // local | remote | local_fallback
+    val lastStatus: String = "",
     val handDetected: Boolean = false,
     val fps: Float = 0f,
     val detectedHands: List<DetectedHand> = emptyList(),
@@ -68,6 +77,16 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private val pipelineDispatcher = pipelineExecutor.asCoroutineDispatcher()
     private val pipelineScope      = CoroutineScope(SupervisorJob() + pipelineDispatcher)
 
+    // ── P0/P1 translation selection ───────────────────────────────────────────
+    private val localGlossToText: LocalGlossToText by lazy { LocalGlossToText(gloss2Text) }
+    private val configStore: TranslationConfigStore by lazy { TranslationConfigStore(application) }
+    private lateinit var storedConfig: StoredTranslationConfig
+    /** Serialises translations so sentences are produced/displayed in submission order. */
+    private val translationMutex = Mutex()
+    private val appSessionId  = UUID.randomUUID().toString().take(8)
+    /** Bumped on clear/cancel; responses from an older epoch are logged and dropped. */
+    private val sessionEpoch  = AtomicLong(0L)
+
     private var perfLastInference = -1L
     private var perfSentenceSeq = 1L
     private var perfWordOrdinal = 0
@@ -82,6 +101,14 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private var lastHandSeenMs         = 0L
 
     init {
+        storedConfig = configStore.load()
+        _state.update {
+            it.copy(
+                translationMode = storedConfig.mode,
+                remoteUrl       = storedConfig.remoteUrl,
+                remoteHasToken  = storedConfig.remoteToken.isNotBlank(),
+            )
+        }
         PerfTrace.begin("", "app_start")
         viewModelScope.launch(Dispatchers.IO) { gloss2Text.initialize() }
         viewModelScope.launch(Dispatchers.IO) {
@@ -136,6 +163,34 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     fun setStyle(style: String) { _state.update { it.copy(style = style) } }
 
+    fun toggleTranslationMode() {
+        setTranslationMode(if (_state.value.translationMode == "remote") "local" else "remote")
+    }
+
+    fun setTranslationMode(mode: String) {
+        val normalized = if (mode == "remote") "remote" else "local"
+        storedConfig = storedConfig.copy(mode = normalized)
+        configStore.saveMode(normalized)
+        _state.update { it.copy(translationMode = normalized) }
+        PerfTrace.event("translation_mode", PerfTrace.current, "mode" to normalized)
+    }
+
+    /** Saves the remote endpoint. Pass a blank token to keep the existing one. */
+    fun updateRemoteSettings(url: String, token: String?) {
+        val newToken = token?.takeIf { it.isNotBlank() } ?: storedConfig.remoteToken
+        storedConfig = storedConfig.copy(remoteUrl = url.trim(), remoteToken = newToken)
+        configStore.saveRemote(storedConfig.remoteUrl, storedConfig.remoteToken)
+        _state.update {
+            it.copy(
+                remoteUrl      = storedConfig.remoteUrl,
+                remoteHasToken = storedConfig.remoteToken.isNotBlank(),
+            )
+        }
+    }
+
+    fun remoteSettingsForDialog(): Pair<String, Boolean> =
+        storedConfig.remoteUrl to storedConfig.remoteToken.isNotBlank()
+
     /** Démarre / arrête l'écoute de la personne entendante. Appelé depuis le main thread. */
     fun toggleListening() {
         if (_state.value.isListening) {
@@ -157,6 +212,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun clearBuffer() {
+        // Invalidate any in-flight sentence: its response belongs to an older session.
+        sessionEpoch.incrementAndGet()
         pipelineScope.launch {
             signRecognizer.clearBuffer()
             glossBuffer.clear()
@@ -170,7 +227,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 it.copy(
                     currentSign = "", currentConf = 0f, top3 = emptyList(),
                     pendingGlosses = emptyList(), translatedSentence = "",
-                    isTranslating = false, handDetected = false, fps = 0f,
+                    isTranslating = false, lastSource = "", lastStatus = "",
+                    handDetected = false, fps = 0f,
                     detectedHands = emptyList(), faceDots = emptyList(),
                 )
             }
@@ -290,22 +348,95 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             "trigger" to trigger, "submitted_ns" to submittedNs.toString(),
             "glosses" to glosses.joinToString(" "))
         val style = _state.value.style
+        val mode = _state.value.translationMode
+        val epochAtSubmit = sessionEpoch.get()
+        val sessionId = "$appSessionId-$epochAtSubmit"
+
         viewModelScope.launch(Dispatchers.Default) {
-            _state.update { it.copy(isTranslating = true) }
-            PerfTrace.event("generation_started", trial, "request_id" to requestId)
-            val sentence = gloss2Text.translate(glosses, style, trial, requestId)
-            PerfTrace.event("sentence_returned", trial, "request_id" to requestId,
-                "text" to sentence, "submit_to_return_ms" to (PerfTrace.now() - submittedNs) / 1e6)
-            val entry      = HistoryEntry(System.currentTimeMillis(), glosses, sentence)
-            val newHistory = (_state.value.history + entry).takeLast(20)
-            _state.update { it.copy(translatedSentence = sentence, isTranslating = false, history = newHistory) }
-            viewModelScope.launch(Dispatchers.IO) { saveHistory(newHistory) }
-            // TTS uniquement si le LLM est chargé — pas le fallback texte brut
-            if (gloss2Text.isAvailable && sentence.isNotBlank() && sentence != lastTranslatedSentence) {
-                lastTranslatedSentence = sentence
-                if (!_state.value.isMuted) tts.speak(sentence, trial, requestId)
+            // One translation at a time keeps sentence order stable (proposal 7.2).
+            translationMutex.withLock {
+                if (sessionEpoch.get() != epochAtSubmit) {
+                    PerfTrace.event("stale_response", trial, "request_id" to requestId,
+                        "reason" to "session_changed_before_start")
+                    return@withLock
+                }
+                _state.update { it.copy(isTranslating = true) }
+                PerfTrace.event("generation_started", trial, "request_id" to requestId, "mode" to mode)
+
+                val outcome = runTranslation(mode, glosses, style, trial, requestId, sessionId, sentenceId)
+
+                if (sessionEpoch.get() != epochAtSubmit) {
+                    PerfTrace.event("stale_response", trial, "request_id" to requestId,
+                        "reason" to "session_changed_after_response", "source" to outcome.source)
+                    _state.update { it.copy(isTranslating = false) }
+                    return@withLock
+                }
+
+                PerfTrace.event("sentence_returned", trial, "request_id" to requestId,
+                    "text" to outcome.text, "source" to outcome.source,
+                    "status" to outcome.status,
+                    "submit_to_return_ms" to (PerfTrace.now() - submittedNs) / 1e6,
+                    "client_ms" to (outcome.clientMs ?: -1.0),
+                    "server_queue_ms" to (outcome.serverQueueMs ?: -1.0),
+                    "server_inference_ms" to (outcome.serverInferenceMs ?: -1.0))
+
+                val sentence = outcome.text
+                if (sentence.isNotBlank()) {
+                    val entry      = HistoryEntry(System.currentTimeMillis(), glosses, sentence)
+                    val newHistory = (_state.value.history + entry).takeLast(20)
+                    _state.update {
+                        it.copy(
+                            translatedSentence = sentence,
+                            isTranslating      = false,
+                            history            = newHistory,
+                            lastSource         = outcome.source,
+                            lastStatus         = outcome.status,
+                        )
+                    }
+                    viewModelScope.launch(Dispatchers.IO) { saveHistory(newHistory) }
+                    // Speak real sentences only; never speak the raw-gloss fallback.
+                    val speakable = outcome.isRealSentence &&
+                        (outcome.source != "local" || gloss2Text.isAvailable)
+                    if (speakable && sentence != lastTranslatedSentence) {
+                        lastTranslatedSentence = sentence
+                        if (!_state.value.isMuted) tts.speak(sentence, trial, requestId)
+                    }
+                } else {
+                    // No sentence (remote failure with no local model): show the glosses.
+                    _state.update {
+                        it.copy(
+                            isTranslating      = false,
+                            translatedSentence = glosses.joinToString(" ").uppercase(),
+                            lastSource         = outcome.source,
+                            lastStatus         = outcome.status,
+                        )
+                    }
+                }
             }
         }
+    }
+
+    private suspend fun runTranslation(
+        mode: String, glosses: List<String>, style: String,
+        trial: PerfTrial, requestId: String, sessionId: String, sentenceIndex: Long,
+    ): TranslationResult {
+        if (mode == "remote") {
+            val remote = RemoteGlossToText(
+                RemoteConfig(
+                    url          = storedConfig.remoteUrl,
+                    token        = storedConfig.remoteToken,
+                    modelVersion = BuildConfig.REMOTE_MODEL_VERSION,
+                )
+            )
+            val remoteResult = remote.translate(glosses, style, trial, requestId, sessionId, sentenceIndex)
+            if (!remoteResult.isRemoteFailure) return remoteResult
+
+            PerfTrace.event("remote_fallback", trial, "request_id" to requestId,
+                "reason" to remoteResult.status, "error" to (remoteResult.error ?: ""))
+            val local = localGlossToText.translate(glosses, style, trial, requestId, sessionId, sentenceIndex)
+            return local.copy(source = "local_fallback")
+        }
+        return localGlossToText.translate(glosses, style, trial, requestId, sessionId, sentenceIndex)
     }
 
     // ── History persistence ───────────────────────────────────────────────────

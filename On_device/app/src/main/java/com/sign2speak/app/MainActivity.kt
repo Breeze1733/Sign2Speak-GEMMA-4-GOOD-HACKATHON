@@ -64,6 +64,8 @@ class MainActivity : ComponentActivity() {
 
                 val modelReady by downloadViewModel.modelReady.collectAsState()
                 var initialBinUri by remember { mutableStateOf<Uri?>(null) }
+                // Remote P1 and bare recognition do not need the 2.58 GB on-device model.
+                var skipModelGate by remember { mutableStateOf(false) }
 
                 val filePickerLauncher = rememberLauncherForActivityResult(
                     contract = ActivityResultContracts.OpenDocument()
@@ -74,8 +76,9 @@ class MainActivity : ComponentActivity() {
                 }
 
                 when {
-                    // ── 1. Modèle absent → écran de téléchargement ───────────
-                    !modelReady -> ModelDownloadScreen(downloadViewModel)
+                    // ── 1. Modèle absent → écran de téléchargement (skip possible) ──
+                    !modelReady && !skipModelGate ->
+                        ModelDownloadScreen(downloadViewModel) { skipModelGate = true }
 
                     // ── 2. Modèle OK mais caméra refusée (hors mode .bin) ────
                     !cameraPermissionGranted && initialBinUri == null -> {

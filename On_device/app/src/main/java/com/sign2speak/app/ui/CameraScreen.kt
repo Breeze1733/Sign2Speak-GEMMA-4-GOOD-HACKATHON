@@ -40,10 +40,13 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
@@ -74,6 +77,7 @@ import com.sign2speak.app.DetectedHand
 import com.sign2speak.app.HistoryEntry
 import com.sign2speak.app.LandmarkPoint
 import com.sign2speak.app.MainViewModel
+import java.io.File
 
 // ─── MediaPipe hand skeleton connections (21 keypoints) ──────────────────────
 private val HAND_CONNECTIONS = listOf(
@@ -117,6 +121,14 @@ fun CameraScreen(
     var binTotalFrames by remember { mutableStateOf(0) }
     var isBinPlaying by remember { mutableStateOf(false) }
     var binError by remember { mutableStateOf<String?>(null) }
+    var showRemoteDialog by remember { mutableStateOf(false) }
+    var showClipsDialog by remember { mutableStateOf(false) }
+    val clipFiles = remember(showClipsDialog) {
+        context.getExternalFilesDir(null)
+            ?.listFiles { f -> f.isFile && f.name.endsWith(".bin", ignoreCase = true) }
+            ?.sortedBy { it.name }
+            ?: emptyList()
+    }
 
     val filePickerLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.OpenDocument()
@@ -258,6 +270,14 @@ fun CameraScreen(
                         if (hasCameraPermission) activeBinUri = null
                         else onRequestCameraPermission()
                     },
+                    onOpenClips = { showClipsDialog = true },
+                )
+                TranslationModePanel(
+                    mode       = state.translationMode,
+                    lastSource = state.lastSource,
+                    lastStatus = state.lastStatus,
+                    onToggle   = { viewModel.toggleTranslationMode() },
+                    onConfigure= { showRemoteDialog = true },
                 )
                 Top3Panel(state)
             }
@@ -311,6 +331,31 @@ fun CameraScreen(
                 onListen    = { viewModel.toggleListening() },
                 modifier    = Modifier.align(Alignment.BottomCenter),
             )
+
+            if (showRemoteDialog) {
+                RemoteSettingsDialog(
+                    initialUrl = state.remoteUrl,
+                    hasToken   = state.remoteHasToken,
+                    onDismiss  = { showRemoteDialog = false },
+                    onSave     = { url, token ->
+                        viewModel.updateRemoteSettings(url, token)
+                        showRemoteDialog = false
+                    },
+                )
+            }
+
+            if (showClipsDialog) {
+                ClipLibraryDialog(
+                    files       = clipFiles,
+                    packageName = context.packageName,
+                    onDismiss   = { showClipsDialog = false },
+                    onPick      = { file ->
+                        activeBinUri = Uri.fromFile(file)
+                        binRunCounter++
+                        showClipsDialog = false
+                    },
+                )
+            }
         }
     }
 }
@@ -456,6 +501,7 @@ private fun SourceControlPanel(
     onPickBin: () -> Unit,
     onReplayBin: () -> Unit,
     onSwitchCamera: () -> Unit,
+    onOpenClips: () -> Unit,
 ) {
     Column(
         modifier = Modifier
@@ -475,6 +521,14 @@ private fun SourceControlPanel(
                     .padding(horizontal = 8.dp, vertical = 4.dp),
             ) {
                 Text(".BIN", color = White, fontSize = 11.sp, fontWeight = FontWeight.Bold)
+            }
+            Box(
+                modifier = Modifier
+                    .background(Color(0xFF283593), RoundedCornerShape(6.dp))
+                    .clickable { onOpenClips() }
+                    .padding(horizontal = 8.dp, vertical = 4.dp),
+            ) {
+                Text("CLIPS", color = White, fontSize = 11.sp, fontWeight = FontWeight.Bold)
             }
 
             if (isBinMode) {
@@ -719,6 +773,164 @@ private fun HeardTextPanel(text: String, isListening: Boolean, modifier: Modifie
             }
         }
     }
+}
+
+// ─── P1 translation mode (local P0 / remote P1) ──────────────────────────────
+
+@Composable
+private fun TranslationModePanel(
+    mode       : String,
+    lastSource : String,
+    lastStatus : String,
+    onToggle   : () -> Unit,
+    onConfigure: () -> Unit,
+) {
+    Column(
+        modifier = Modifier
+            .background(Scrim, RoundedCornerShape(8.dp))
+            .padding(horizontal = 8.dp, vertical = 6.dp),
+        horizontalAlignment = Alignment.End,
+        verticalArrangement = Arrangement.spacedBy(4.dp),
+    ) {
+        Row(
+            horizontalArrangement = Arrangement.spacedBy(6.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Box(
+                modifier = Modifier
+                    .background(
+                        if (mode == "remote") Color(0xFF00695C) else Color(0xFF4E342E),
+                        RoundedCornerShape(6.dp),
+                    )
+                    .clickable { onToggle() }
+                    .padding(horizontal = 8.dp, vertical = 4.dp),
+            ) {
+                Text(
+                    text       = if (mode == "remote") "G2T REMOTE" else "G2T LOCAL",
+                    color      = White,
+                    fontSize   = 11.sp,
+                    fontWeight = FontWeight.Bold,
+                )
+            }
+            Box(
+                modifier = Modifier
+                    .background(Color(0xFF263238), RoundedCornerShape(6.dp))
+                    .clickable { onConfigure() }
+                    .padding(horizontal = 8.dp, vertical = 4.dp),
+            ) {
+                Text("CFG", color = White, fontSize = 11.sp, fontWeight = FontWeight.Bold)
+            }
+        }
+        if (lastSource.isNotEmpty()) {
+            Text(
+                text = "last: $lastSource ${lastStatus.take(20)}",
+                color = Cyan,
+                fontSize = 9.sp,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.widthIn(max = 190.dp),
+            )
+        }
+    }
+}
+
+@Composable
+private fun RemoteSettingsDialog(
+    initialUrl: String,
+    hasToken  : Boolean,
+    onDismiss : () -> Unit,
+    onSave    : (url: String, token: String) -> Unit,
+) {
+    var url   by remember { mutableStateOf(initialUrl) }
+    var token by remember { mutableStateOf("") }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("P1 remote service") },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                OutlinedTextField(
+                    value         = url,
+                    onValueChange = { url = it },
+                    label         = { Text("Base URL") },
+                    singleLine    = true,
+                )
+                OutlinedTextField(
+                    value         = token,
+                    onValueChange = { token = it },
+                    label         = { Text(if (hasToken) "Token (blank = keep)" else "Token") },
+                    singleLine    = true,
+                )
+                Text(
+                    "POST /translate · Bearer token · cleartext HTTP",
+                    color = Gray,
+                    fontSize = 11.sp,
+                )
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = { onSave(url, token) }) { Text("SAVE") }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) { Text("CANCEL") }
+        },
+    )
+}
+
+// ─── Local clip library (bypasses the system file picker) ────────────────────
+
+@Composable
+private fun ClipLibraryDialog(
+    files      : List<File>,
+    packageName: String,
+    onDismiss  : () -> Unit,
+    onPick     : (File) -> Unit,
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Local test clips") },
+        text = {
+            if (files.isEmpty()) {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text("No .bin files in the app folder.", color = Gray, fontSize = 13.sp)
+                    Text(
+                        "adb push <clip>.bin /sdcard/Android/data/$packageName/files/",
+                        color = Cyan,
+                        fontSize = 11.sp,
+                    )
+                }
+            } else {
+                Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                    files.forEach { file ->
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clickable { onPick(file) }
+                                .padding(vertical = 8.dp),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Text(
+                                text = file.name,
+                                color = White,
+                                fontSize = 13.sp,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                                modifier = Modifier.weight(1f),
+                            )
+                            Text(
+                                text = "${file.length() / (1024 * 1024)} MB",
+                                color = Gray,
+                                fontSize = 11.sp,
+                                modifier = Modifier.padding(start = 8.dp),
+                            )
+                        }
+                    }
+                }
+            }
+        },
+        confirmButton = { TextButton(onClick = onDismiss) { Text("CLOSE") } },
+    )
 }
 
 // ─── Control bar ─────────────────────────────────────────────────────────────
