@@ -1,0 +1,6 @@
+# Sign2Speak P1 remote gloss2text — pinned for reproducibility.
+# litert-lm-api 0.19.0 must match On_device litertlm-android:0.19.0.
+litert-lm-api==0.19.0
+fastapi==0.162.5
+uvicorn[standard]==0.54.0
+pydantic==2.14.4
