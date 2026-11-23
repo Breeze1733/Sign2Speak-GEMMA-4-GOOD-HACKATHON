@@ -163,11 +163,14 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             lastStableLabel        = ""
             lastTranslatedSentence = ""
             lastHandSeenMs         = 0L
+            lastFrameTimeMs        = 0L
+            fpsSamples.clear()
+            frameCount             = 0
             _state.update {
                 it.copy(
                     currentSign = "", currentConf = 0f, top3 = emptyList(),
                     pendingGlosses = emptyList(), translatedSentence = "",
-                    isTranslating = false, handDetected = false,
+                    isTranslating = false, handDetected = false, fps = 0f,
                     detectedHands = emptyList(), faceDots = emptyList(),
                 )
             }

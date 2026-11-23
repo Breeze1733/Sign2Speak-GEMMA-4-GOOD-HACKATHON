@@ -1,6 +1,16 @@
 package com.sign2speak.app.ui
 
+import android.graphics.Bitmap
+import android.net.Uri
+import android.os.Handler
+import android.os.Looper
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.camera.view.PreviewView
+import androidx.compose.foundation.Image
+import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.layout.ContentScale
+import com.sign2speak.app.FramePackSource
 import androidx.compose.animation.core.LinearEasing
 import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.animateFloat
@@ -39,7 +49,9 @@ import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -86,13 +98,59 @@ private val Scrim  = Color(0xB3000000)   // 70 % black
 // ─── Root screen ─────────────────────────────────────────────────────────────
 
 @Composable
-fun CameraScreen(viewModel: MainViewModel) {
+fun CameraScreen(
+    viewModel: MainViewModel,
+    initialBinUri: Uri? = null,
+    hasCameraPermission: Boolean = true,
+    onRequestCameraPermission: () -> Unit = {},
+) {
     val state by viewModel.state.collectAsState()
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
+    val mainHandler = remember { Handler(Looper.getMainLooper()) }
+
+    var activeBinUri by remember { mutableStateOf(initialBinUri) }
+    var binRunCounter by remember { mutableStateOf(0) }
+    var videoPreviewBitmap by remember { mutableStateOf<Bitmap?>(null) }
+    var binFileName by remember { mutableStateOf("") }
+    var binFrameIdx by remember { mutableStateOf(0) }
+    var binTotalFrames by remember { mutableStateOf(0) }
+    var isBinPlaying by remember { mutableStateOf(false) }
+    var binError by remember { mutableStateOf<String?>(null) }
+
+    val filePickerLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.OpenDocument()
+    ) { uri ->
+        if (uri != null) {
+            activeBinUri = uri
+            binRunCounter++
+        }
+    }
 
     val cameraManager = remember {
-        CameraManager(context) { hand, face, ts, imgW, imgH, perf -> viewModel.onFrameProcessed(hand, face, ts, imgW, imgH, perf) }
+        CameraManager(context) { hand, face, ts, imgW, imgH, perf ->
+            viewModel.onFrameProcessed(hand, face, ts, imgW, imgH, perf)
+        }
+    }
+    val framePackSource = remember {
+        FramePackSource(
+            context = context,
+            onFrame = { hand, face, ts, imgW, imgH, perf, bmp, idx, total ->
+                viewModel.onFrameProcessed(hand, face, ts, imgW, imgH, perf)
+                mainHandler.post {
+                    videoPreviewBitmap = bmp
+                    binFrameIdx = idx
+                    binTotalFrames = total
+                }
+            },
+            onStateChange = { name, playing, err ->
+                mainHandler.post {
+                    binFileName = name
+                    isBinPlaying = playing
+                    binError = err
+                }
+            },
+        )
     }
     val previewView = remember {
         PreviewView(context).apply {
@@ -102,14 +160,53 @@ fun CameraScreen(viewModel: MainViewModel) {
 
     LaunchedEffect(Unit) {
         cameraManager.initialize()
-        cameraManager.startCamera(lifecycleOwner, previewView)
     }
-    DisposableEffect(Unit) { onDispose { cameraManager.close() } }
+    LaunchedEffect(activeBinUri, binRunCounter, hasCameraPermission) {
+        val uri = activeBinUri
+        if (uri != null) {
+            cameraManager.stopCamera()
+            videoPreviewBitmap = null
+            binFrameIdx = 0
+            binTotalFrames = 0
+            binError = null
+            viewModel.clearBuffer()
+            framePackSource.start(uri)
+        } else if (hasCameraPermission) {
+            framePackSource.stop()
+            videoPreviewBitmap = null
+            binError = null
+            viewModel.clearBuffer()
+            cameraManager.startCamera(lifecycleOwner, previewView)
+        } else {
+            framePackSource.stop()
+            cameraManager.stopCamera()
+        }
+    }
+    DisposableEffect(Unit) {
+        onDispose {
+            cameraManager.close()
+            framePackSource.close()
+        }
+    }
+
+    val isBinMode = activeBinUri != null
 
     Box(modifier = Modifier.fillMaxSize().background(Dark)) {
 
-        // ── 1. Camera preview ────────────────────────────────────────────────
-        AndroidView(factory = { previewView }, modifier = Modifier.fillMaxSize())
+        // ── 1. Camera preview or imported .bin frame preview ────────────────
+        if (!isBinMode) {
+            AndroidView(factory = { previewView }, modifier = Modifier.fillMaxSize())
+        } else {
+            val previewBmp = videoPreviewBitmap
+            if (previewBmp != null) {
+                Image(
+                    bitmap             = previewBmp.asImageBitmap(),
+                    contentDescription = "Imported frame pack preview",
+                    contentScale       = ContentScale.Fit,
+                    modifier           = Modifier.fillMaxSize(),
+                )
+            }
+        }
 
         // ── 2. Landmark skeleton overlay ─────────────────────────────────────
         LandmarkOverlay(
@@ -117,6 +214,7 @@ fun CameraScreen(viewModel: MainViewModel) {
             faceDots      = state.faceDots,
             cameraWidth   = state.cameraWidth,
             cameraHeight  = state.cameraHeight,
+            isCameraMode  = !isBinMode,
         )
 
         // ── 3. HUD ───────────────────────────────────────────────────────────
@@ -126,6 +224,7 @@ fun CameraScreen(viewModel: MainViewModel) {
             Column(
                 modifier = Modifier
                     .align(Alignment.TopStart)
+                    .statusBarsPadding()
                     .padding(8.dp),
                 verticalArrangement = Arrangement.spacedBy(4.dp),
             ) {
@@ -137,8 +236,29 @@ fun CameraScreen(viewModel: MainViewModel) {
                 )
             }
 
-            // Top-right: top-3 predictions
-            Box(modifier = Modifier.align(Alignment.TopEnd).padding(8.dp)) {
+            // Top-right: .bin source controls + top-3 predictions
+            Column(
+                modifier = Modifier
+                    .align(Alignment.TopEnd)
+                    .statusBarsPadding()
+                    .padding(8.dp),
+                horizontalAlignment = Alignment.End,
+                verticalArrangement = Arrangement.spacedBy(6.dp),
+            ) {
+                SourceControlPanel(
+                    isBinMode      = isBinMode,
+                    isBinPlaying   = isBinPlaying,
+                    binFileName    = binFileName,
+                    binFrameIdx    = binFrameIdx,
+                    binTotalFrames = binTotalFrames,
+                    binError       = binError,
+                    onPickBin      = { filePickerLauncher.launch(arrayOf("*/*")) },
+                    onReplayBin    = { binRunCounter++ },
+                    onSwitchCamera = {
+                        if (hasCameraPermission) activeBinUri = null
+                        else onRequestCameraPermission()
+                    },
+                )
                 Top3Panel(state)
             }
 
@@ -203,26 +323,36 @@ private fun LandmarkOverlay(
     faceDots     : List<LandmarkPoint>,
     cameraWidth  : Int,
     cameraHeight : Int,
+    isCameraMode : Boolean,
 ) {
     Canvas(modifier = Modifier.fillMaxSize()) {
         val w = size.width
         val h = size.height
 
-        // FILL_CENTER — calcul toujours en espace portrait (narrow×tall)
-        // pour être robuste quelle que soit l'orientation du bitmap caméra.
-        val camNarrow = minOf(cameraWidth, cameraHeight).toFloat()  // 720
-        val camTall   = maxOf(cameraWidth, cameraHeight).toFloat()  // 1280
-        val scale = maxOf(w / camNarrow, h / camTall)
-        val dispW = camNarrow * scale   // ex. 1350 sur écran 1080×2400
-        val dispH = camTall   * scale   // ex. 2400
-        val cropX = (dispW - w) / 2f   // ex. 135 px — utilisé pour compenser le crop FILL_CENTER
-
-        // 90° CCW depuis formule précédente : (1-lm.x)→X, lm.y→Y
-        // (1-lm.x) : miroir caméra frontale sur axe X
-        fun lmToScreen(lm: LandmarkPoint) = Offset(
-            (1f - lm.x) * dispW - cropX,
-            lm.y * dispH,
-        )
+        fun lmToScreen(lm: LandmarkPoint): Offset {
+            return if (isCameraMode) {
+                // FILL_CENTER — calcul toujours en espace portrait (narrow×tall)
+                // pour être robuste quelle que soit l'orientation du bitmap caméra.
+                val camNarrow = minOf(cameraWidth, cameraHeight).toFloat()  // 720
+                val camTall   = maxOf(cameraWidth, cameraHeight).toFloat()  // 1280
+                val scale = maxOf(w / camNarrow, h / camTall)
+                val dispW = camNarrow * scale   // ex. 1350 sur écran 1080×2400
+                val dispH = camTall   * scale   // ex. 2400
+                val cropX = (dispW - w) / 2f   // ex. 135 px — utilisé pour compenser le crop FILL_CENTER
+                // (1-lm.x) : miroir caméra frontale sur axe X
+                Offset((1f - lm.x) * dispW - cropX, lm.y * dispH)
+            } else {
+                // Mode .bin : Image utilise ContentScale.Fit sans miroir
+                val srcW = cameraWidth.toFloat().coerceAtLeast(1f)
+                val srcH = cameraHeight.toFloat().coerceAtLeast(1f)
+                val scale = minOf(w / srcW, h / srcH)
+                val dispW = srcW * scale
+                val dispH = srcH * scale
+                val offsetX = (w - dispW) / 2f
+                val offsetY = (h - dispH) / 2f
+                Offset(offsetX + lm.x * dispW, offsetY + lm.y * dispH)
+            }
+        }
 
         // Face: lip, nose, eye dots (cyan)
         faceDots.forEach { pt ->
@@ -308,6 +438,80 @@ private fun StatusPanel(state: AppState) {
                 text     = "→ Show left hand",
                 color    = Yellow.copy(alpha = 0.85f),
                 fontSize = 10.sp,
+            )
+        }
+    }
+}
+
+// ─── Source control panel (.bin import / camera switch) ──────────────────────
+
+@Composable
+private fun SourceControlPanel(
+    isBinMode: Boolean,
+    isBinPlaying: Boolean,
+    binFileName: String,
+    binFrameIdx: Int,
+    binTotalFrames: Int,
+    binError: String?,
+    onPickBin: () -> Unit,
+    onReplayBin: () -> Unit,
+    onSwitchCamera: () -> Unit,
+) {
+    Column(
+        modifier = Modifier
+            .background(Scrim, RoundedCornerShape(8.dp))
+            .padding(horizontal = 8.dp, vertical = 6.dp),
+        horizontalAlignment = Alignment.End,
+        verticalArrangement = Arrangement.spacedBy(4.dp),
+    ) {
+        Row(
+            horizontalArrangement = Arrangement.spacedBy(6.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Box(
+                modifier = Modifier
+                    .background(Color(0xFF00695C), RoundedCornerShape(6.dp))
+                    .clickable { onPickBin() }
+                    .padding(horizontal = 8.dp, vertical = 4.dp),
+            ) {
+                Text(".BIN", color = White, fontSize = 11.sp, fontWeight = FontWeight.Bold)
+            }
+
+            if (isBinMode) {
+                if (!isBinPlaying) {
+                    Box(
+                        modifier = Modifier
+                            .background(Color(0xFF1565C0), RoundedCornerShape(6.dp))
+                            .clickable { onReplayBin() }
+                            .padding(horizontal = 8.dp, vertical = 4.dp),
+                    ) {
+                        Text("REPLAY", color = White, fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                    }
+                }
+                Box(
+                    modifier = Modifier
+                        .background(Color(0xFF37474F), RoundedCornerShape(6.dp))
+                        .clickable { onSwitchCamera() }
+                        .padding(horizontal = 8.dp, vertical = 4.dp),
+                ) {
+                    Text("CAM", color = White, fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                }
+            }
+        }
+
+        if (isBinMode) {
+            val statusLine = when {
+                binError != null -> binError
+                binTotalFrames > 0 -> "$binFileName ($binFrameIdx/$binTotalFrames)"
+                else -> binFileName.ifEmpty { "Loading .bin…" }
+            }
+            Text(
+                text = statusLine,
+                color = if (binError != null) Color(0xFFEF5350) else Cyan,
+                fontSize = 10.sp,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.widthIn(max = 180.dp),
             )
         }
     }

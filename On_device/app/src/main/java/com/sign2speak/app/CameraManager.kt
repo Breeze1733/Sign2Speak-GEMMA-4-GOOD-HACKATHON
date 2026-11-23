@@ -12,22 +12,11 @@ import androidx.camera.lifecycle.ProcessCameraProvider
 import androidx.camera.view.PreviewView
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.LifecycleOwner
-import com.google.mediapipe.framework.image.BitmapImageBuilder
-import com.google.mediapipe.tasks.core.BaseOptions
-import com.google.mediapipe.tasks.core.Delegate
-import com.google.mediapipe.tasks.vision.core.RunningMode
-import com.google.mediapipe.tasks.vision.facelandmarker.FaceLandmarker
-import com.google.mediapipe.tasks.vision.facelandmarker.FaceLandmarker.FaceLandmarkerOptions
 import com.google.mediapipe.tasks.vision.facelandmarker.FaceLandmarkerResult
-import com.google.mediapipe.tasks.vision.handlandmarker.HandLandmarker
-import com.google.mediapipe.tasks.vision.handlandmarker.HandLandmarker.HandLandmarkerOptions
 import com.google.mediapipe.tasks.vision.handlandmarker.HandLandmarkerResult
 import java.util.concurrent.Executors
 
 private const val TAG = "CameraManager"
-
-// Face landmarks toutes les N frames (optimisation CPU)
-private const val FACE_EVERY_N = 3
 
 class CameraManager(
     private val context: Context,
@@ -35,71 +24,26 @@ class CameraManager(
 ) {
 
     private val analysisExecutor = Executors.newSingleThreadExecutor()
+    private val landmarkDetector = LandmarkDetector(context)
 
-    private var handLandmarker: HandLandmarker? = null
-    private var faceLandmarker: FaceLandmarker? = null
-
-    private var faceResultCache: FaceLandmarkerResult? = null
-    private var faceFrameCounter = 0
+    @Volatile private var isDetectorReady = false
+    @Volatile private var isRunning = false
 
     private var frameIndex = 0L
     private var cameraProvider: ProcessCameraProvider? = null
 
     fun initialize() {
-        // Essaie GPU d'abord, fallback CPU si indisponible
-        handLandmarker = createHandLandmarker(Delegate.GPU)
-            ?: createHandLandmarker(Delegate.CPU)
-        faceLandmarker = createFaceLandmarker(Delegate.GPU)
-            ?: createFaceLandmarker(Delegate.CPU)
-    }
-
-    private fun createHandLandmarker(delegate: Delegate): HandLandmarker? = try {
-        val options = HandLandmarkerOptions.builder()
-            .setBaseOptions(
-                BaseOptions.builder()
-                    .setModelAssetPath("hand_landmarker.task")
-                    .setDelegate(delegate)
-                    .build()
-            )
-            .setRunningMode(RunningMode.VIDEO)
-            .setNumHands(2)
-            .setMinHandDetectionConfidence(0.2f)
-            .setMinHandPresenceConfidence(0.2f)
-            .setMinTrackingConfidence(0.2f)
-            .build()
-        HandLandmarker.createFromOptions(context, options).also {
-            Log.i(TAG, "HandLandmarker initialisé ($delegate)")
+        analysisExecutor.execute {
+            landmarkDetector.initialize()
+            isDetectorReady = true
         }
-    } catch (e: Exception) {
-        Log.w(TAG, "HandLandmarker $delegate ÉCHEC: ${e.message}")
-        null
-    }
-
-    private fun createFaceLandmarker(delegate: Delegate): FaceLandmarker? = try {
-        val options = FaceLandmarkerOptions.builder()
-            .setBaseOptions(
-                BaseOptions.builder()
-                    .setModelAssetPath("face_landmarker.task")
-                    .setDelegate(delegate)
-                    .build()
-            )
-            .setRunningMode(RunningMode.VIDEO)
-            .setNumFaces(1)
-            .setMinFaceDetectionConfidence(0.3f)
-            .setMinFacePresenceConfidence(0.3f)
-            .setMinTrackingConfidence(0.3f)
-            .build()
-        FaceLandmarker.createFromOptions(context, options).also {
-            Log.i(TAG, "FaceLandmarker initialisé ($delegate)")
-        }
-    } catch (e: Exception) {
-        Log.w(TAG, "FaceLandmarker $delegate ÉCHEC: ${e.message}")
-        null
     }
 
     fun startCamera(lifecycleOwner: LifecycleOwner, previewView: PreviewView) {
+        isRunning = true
         val cameraProviderFuture = ProcessCameraProvider.getInstance(context)
         cameraProviderFuture.addListener({
+            if (!isRunning) return@addListener
             cameraProvider = cameraProviderFuture.get()
 
             val preview = Preview.Builder().build().also {
@@ -130,58 +74,47 @@ class CameraManager(
     }
 
     private fun processFrame(imageProxy: ImageProxy) {
-        val timestampMs = frameIndex * 33L
         val perfTrial = PerfTrace.current
         val observedNs = PerfTrace.now()
 
         try {
+            if (!isRunning || !isDetectorReady) return
+
+            val timestampMs = frameIndex * 33L
             val bitmap = imageProxy.toRgbaBitmap() ?: return
 
-            // Log dimensions 1 seule fois pour diagnostiquer l'orientation
             if (frameIndex == 0L) {
                 Log.i(TAG, "Bitmap dims: ${bitmap.width}×${bitmap.height}, rotation=${imageProxy.imageInfo.rotationDegrees}°")
             }
 
-            val mpImage = BitmapImageBuilder(bitmap).build()
-
-            val handResult = try {
-                handLandmarker?.detectForVideo(mpImage, timestampMs)
-            } catch (e: Exception) {
-                Log.w(TAG, "HandLandmarker: ${e.message}"); null
-            }
-
-            faceFrameCounter = (faceFrameCounter + 1) % FACE_EVERY_N
-            if (faceFrameCounter == 0) {
-                faceResultCache = try {
-                    faceLandmarker?.detectForVideo(mpImage, timestampMs)
-                } catch (e: Exception) {
-                    Log.w(TAG, "FaceLandmarker: ${e.message}"); faceResultCache
-                }
-            }
-
+            val detection = landmarkDetector.detect(bitmap, timestampMs)
             val perf = if (BuildConfig.TIMING_ENABLED) {
                 val handFinishedNs = PerfTrace.now()
-                PerfTrace.observeHand(PerfFrame(perfTrial, observedNs, handFinishedNs, frameIndex),
-                    handResult?.landmarks()?.isNotEmpty() == true)
+                PerfTrace.observeHand(
+                    PerfFrame(perfTrial, observedNs, handFinishedNs, frameIndex),
+                    detection.handResult?.landmarks()?.isNotEmpty() == true,
+                )
             } else {
                 PerfFrame.Disabled
             }
-            onFrame(handResult, faceResultCache, timestampMs, bitmap.width, bitmap.height, perf)
+            onFrame(detection.handResult, detection.faceResult, timestampMs, bitmap.width, bitmap.height, perf)
             frameIndex++
-
         } finally {
             imageProxy.close()
         }
     }
 
     fun stopCamera() {
+        isRunning = false
         cameraProvider?.unbindAll()
     }
 
     fun close() {
         stopCamera()
-        try { handLandmarker?.close() } catch (_: Exception) {}
-        try { faceLandmarker?.close() } catch (_: Exception) {}
+        isDetectorReady = false
+        analysisExecutor.execute {
+            landmarkDetector.close()
+        }
         analysisExecutor.shutdown()
     }
 }

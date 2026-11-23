@@ -2,18 +2,24 @@ package com.sign2speak.app
 
 import android.Manifest
 import android.content.pm.PackageManager
+import android.net.Uri
 import android.os.Bundle
 import androidx.activity.ComponentActivity
+import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.viewModels
 import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material3.Button
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.getValue
@@ -57,30 +63,41 @@ class MainActivity : ComponentActivity() {
             MaterialTheme(colorScheme = androidx.compose.material3.darkColorScheme()) {
 
                 val modelReady by downloadViewModel.modelReady.collectAsState()
+                var initialBinUri by remember { mutableStateOf<Uri?>(null) }
+
+                val filePickerLauncher = rememberLauncherForActivityResult(
+                    contract = ActivityResultContracts.OpenDocument()
+                ) { uri ->
+                    if (uri != null) {
+                        initialBinUri = uri
+                    }
+                }
 
                 when {
                     // ── 1. Modèle absent → écran de téléchargement ───────────
                     !modelReady -> ModelDownloadScreen(downloadViewModel)
 
-                    // ── 2. Modèle OK mais caméra refusée ─────────────────────
-                    !cameraPermissionGranted -> {
+                    // ── 2. Modèle OK mais caméra refusée (hors mode .bin) ────
+                    !cameraPermissionGranted && initialBinUri == null -> {
                         var permissionRequested by remember { mutableStateOf(false) }
                         Box(
                             modifier = Modifier.fillMaxSize().background(Color.Black),
                             contentAlignment = Alignment.Center,
                         ) {
-                            Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                            Column(
+                                horizontalAlignment = Alignment.CenterHorizontally,
+                                verticalArrangement = Arrangement.spacedBy(12.dp),
+                            ) {
                                 Text(
                                     "Sign2Speak",
                                     color = Color.White,
                                     fontSize = 28.sp,
-                                    modifier = Modifier.padding(bottom = 12.dp),
                                 )
                                 Text(
                                     "La permission caméra est requise\npour détecter la langue des signes.",
                                     color = Color.Gray,
                                     fontSize = 15.sp,
-                                    modifier = Modifier.padding(bottom = 24.dp),
+                                    modifier = Modifier.padding(bottom = 12.dp),
                                     textAlign = TextAlign.Center,
                                 )
                                 Button(onClick = {
@@ -91,12 +108,27 @@ class MainActivity : ComponentActivity() {
                                 }) {
                                     Text(if (permissionRequested) "Relancer la demande" else "Autoriser la caméra")
                                 }
+                                Spacer(Modifier.height(4.dp))
+                                OutlinedButton(onClick = {
+                                    filePickerLauncher.launch(arrayOf("*/*"))
+                                }) {
+                                    Text("Importer un fichier .bin")
+                                }
                             }
                         }
                     }
 
-                    // ── 3. Tout OK → caméra ───────────────────────────────────
-                    else -> CameraScreen(viewModel = viewModel)
+                    // ── 3. Caméra OK ou mode .bin actif ──────────────────────
+                    else -> CameraScreen(
+                        viewModel                 = viewModel,
+                        initialBinUri             = initialBinUri,
+                        hasCameraPermission       = cameraPermissionGranted,
+                        onRequestCameraPermission = {
+                            permissionLauncher.launch(
+                                arrayOf(Manifest.permission.CAMERA, Manifest.permission.RECORD_AUDIO)
+                            )
+                        },
+                    )
                 }
             }
         }
