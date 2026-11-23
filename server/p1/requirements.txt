@@ -1,6 +1,13 @@
-# Sign2Speak P1 remote gloss2text — pinned for reproducibility.
+# Sign2Speak P1/P2 remote service — pinned for reproducibility.
 # litert-lm-api 0.19.0 must match On_device litertlm-android:0.19.0.
 litert-lm-api==0.19.0
 fastapi==0.162.5
 uvicorn[standard]==0.54.0
 pydantic==2.14.4
+# P2 classifier runtime. Verified on 2026-11-24 with ai-edge-litert 2.4.0
+# (SELECT_TF_OPS loads classifier.tflite; warm CPU inference ~3 ms).
+# ai-edge-litert 2.4.0 warns on Python 3.10 but works; upgrade the server venv
+# to 3.11 when convenient. If SELECT_TF_OPS ever fails, use
+# tensorflow-cpu==2.16.1 (which requires numpy<2) and set CLASSIFIER_RUNTIME=tf.
+numpy>=1.26,<3
+ai-edge-litert==2.4.0

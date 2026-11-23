@@ -1,5 +1,5 @@
 [Unit]
-Description=Sign2Speak P1 remote gloss-to-text service (LiteRT-LM CPU)
+Description=Sign2Speak P1/P2 remote service (Gemma G2T + TFLite M3)
 After=network-online.target
 Wants=network-online.target
 

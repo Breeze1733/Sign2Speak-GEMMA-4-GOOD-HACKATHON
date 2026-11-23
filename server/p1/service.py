@@ -24,10 +24,13 @@ from contextlib import asynccontextmanager
 from importlib.metadata import PackageNotFoundError, version as pkg_version
 from pathlib import Path
 
-from fastapi import Depends, FastAPI, Header, HTTPException, status
+from fastapi import Depends, FastAPI, HTTPException, status
 from pydantic import BaseModel, Field
 
+from auth import require_token
 from litert_backend import GenerationResult, GlossTranslator
+from p2_api import router as p2_router
+from p2_recognizer import ClassifierService
 
 # ---------------------------------------------------------------- config ----
 
@@ -35,12 +38,33 @@ MODEL_PATH = os.getenv("MODEL_PATH", "/opt/sign2speak/models/gemma-4-E2B-it.lite
 MODEL_VERSION = os.getenv("MODEL_VERSION", Path(MODEL_PATH).name)
 CACHE_DIR = os.getenv("CACHE_DIR", "/opt/sign2speak/cache")
 LOG_PATH = os.getenv("LOG_PATH", "/opt/sign2speak/logs/p1.jsonl")
-TOKEN = os.getenv("S2S_TOKEN", "")
 THREADS = int(os.getenv("THREADS", "4"))
 MAX_OUTPUT_TOKENS = int(os.getenv("MAX_OUTPUT_TOKENS", "64"))
 MAX_NUM_TOKENS = int(os.getenv("MAX_NUM_TOKENS", "2048"))
 TIMEOUT_S = float(os.getenv("TIMEOUT_S", "60"))
 QUEUE_MAX = int(os.getenv("QUEUE_MAX", "8"))
+
+# ---------------------------------------------------------------- P2 config --
+
+P2_ENABLED = os.getenv("P2_ENABLED", "1") == "1"
+CLASSIFIER_PATH = os.getenv(
+    "CLASSIFIER_PATH", "/opt/sign2speak/models/classifier.tflite"
+)
+CLASSIFIER_META = os.getenv(
+    "CLASSIFIER_META", "/opt/sign2speak/models/model_meta.json"
+)
+CLASSIFIER_VERSION = os.getenv("CLASSIFIER_VERSION", "")
+CLASSIFIER_THREADS = int(os.getenv("CLASSIFIER_THREADS", "1"))
+CLASSIFIER_RUNTIME = os.getenv("CLASSIFIER_RUNTIME", "auto")
+P2_LOG_PATH = os.getenv("P2_LOG_PATH", "/opt/sign2speak/logs/p2.jsonl")
+P2_QUEUE_MAX = int(os.getenv("P2_QUEUE_MAX", "64"))
+P2_TIMEOUT_S = float(os.getenv("P2_TIMEOUT_S", "3"))
+P2_SESSION_TTL_S = float(os.getenv("P2_SESSION_TTL_S", "600"))
+P2_SESSION_MAX = int(os.getenv("P2_SESSION_MAX", "32"))
+P2_MAX_BODY_BYTES = int(os.getenv("P2_MAX_BODY_BYTES", str(2 * 1024 * 1024)))
+P2_DUMP_WINDOWS = os.getenv("P2_DUMP_WINDOWS", "0") == "1"
+P2_DUMP_DIR = os.getenv("P2_DUMP_DIR", "/opt/sign2speak/results/windows")
+P2_STRICT_VERSION = os.getenv("P2_STRICT_VERSION", "0") == "1"
 
 try:
     LITERT_LM_VERSION = pkg_version("litert-lm-api")
@@ -107,18 +131,63 @@ def _worker() -> None:
     log.info("queue worker stopped")
 
 
+def _load_classifier(service: ClassifierService) -> None:
+    # Classifier failures must never prevent the Gemma loader from running.
+    try:
+        service.start()
+    except Exception:  # noqa: BLE001
+        service.loaded = False
+        service.load_error = "classifier loader crashed"
+        log.exception("classifier loader crashed")
+
+
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     Path(CACHE_DIR).mkdir(parents=True, exist_ok=True)
     threading.Thread(target=_worker, name="s2s-worker", daemon=True).start()
     threading.Thread(target=_load_model, name="s2s-loader", daemon=True).start()
+
+    if P2_ENABLED:
+        classifier = ClassifierService(
+            model_path=CLASSIFIER_PATH,
+            meta_path=CLASSIFIER_META,
+            threads=CLASSIFIER_THREADS,
+            runtime=CLASSIFIER_RUNTIME,
+            queue_max=P2_QUEUE_MAX,
+            timeout_s=P2_TIMEOUT_S,
+            session_ttl_s=P2_SESSION_TTL_S,
+            session_max=P2_SESSION_MAX,
+            log_path=P2_LOG_PATH,
+            model_version_override=CLASSIFIER_VERSION,
+            strict_version=P2_STRICT_VERSION,
+            dump_dir=P2_DUMP_DIR if P2_DUMP_WINDOWS else None,
+            max_body_bytes=P2_MAX_BODY_BYTES,
+        )
+        app.state.classifier = classifier
+        threading.Thread(
+            target=_load_classifier,
+            args=(classifier,),
+            name="s2s-p2-loader",
+            daemon=True,
+        ).start()
+    else:
+        app.state.classifier = None
+
     yield
     _stop.set()
     if translator is not None:
         translator.close()
+    classifier = getattr(app.state, "classifier", None)
+    if classifier is not None:
+        classifier.close()
 
 
-app = FastAPI(title="Sign2Speak P1 remote gloss2text", version="1.0", lifespan=lifespan)
+app = FastAPI(
+    title="Sign2Speak P1/P2 remote service (Gemma G2T + TFLite M3)",
+    version="1.1",
+    lifespan=lifespan,
+)
+app.include_router(p2_router)
 
 # ---------------------------------------------------------------- schemas ---
 
@@ -145,18 +214,12 @@ class TranslateResponse(BaseModel):
     litert_lm_version: str
 
 
-def require_token(authorization: str | None = Header(default=None)) -> None:
-    if not TOKEN:
-        return
-    if authorization != f"Bearer {TOKEN}":
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="bad token")
-
 # ---------------------------------------------------------------- routes ----
 
 
 @app.get("/healthz")
 def healthz() -> dict:
-    return {
+    payload = {
         "status": "ok" if translator is not None else "loading",
         "model_loaded": translator is not None,
         "model_error": translator_error,
@@ -168,6 +231,17 @@ def healthz() -> dict:
         "queue_depth": jobs.qsize(),
         "queue_max": QUEUE_MAX,
     }
+    classifier = getattr(app.state, "classifier", None)
+    if classifier is not None:
+        payload.update(classifier.health())
+    else:
+        payload.update(
+            {
+                "classifier_loaded": False,
+                "classifier_error": "disabled" if not P2_ENABLED else "not initialized",
+            }
+        )
+    return payload
 
 
 @app.post("/translate", response_model=TranslateResponse)

@@ -36,6 +36,11 @@ UV_INDEX_URL="$PIP_MIRROR" "$UV" pip install --python "$ROOT/venv/bin/python" \
   -r "$ROOT/app/p1/requirements.txt"
 "$UV" pip freeze --python "$ROOT/venv/bin/python" > "$ROOT/requirements.lock"
 
+echo "==> classifier gate"
+echo "After copying classifier.tflite + model_meta.json to $ROOT/models, run:"
+echo "  $ROOT/venv/bin/python $ROOT/app/scripts/check_classifier.py \\"
+echo "    --model $ROOT/models/classifier.tflite --meta $ROOT/models/model_meta.json"
+
 echo "==> done"
 "$ROOT/venv/bin/python" - <<'PY'
 import litert_lm
