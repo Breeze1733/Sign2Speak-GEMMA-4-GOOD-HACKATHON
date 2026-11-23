@@ -39,12 +39,18 @@ packs/water_please_t01.bin
 
 `.bin` 开头应是 ASCII `S2SF`，紧随版本、宽、高、帧数、fps（小端 int32）。放好后我可以直接读头校验它和视频的 fps/分辨率是否一致——不一致说明帧包可能是另一版视频打的。
 
-## 传到手机（文件导入模式）
+## 传到手机（两种方式）
 
-App 走系统文件选择器，把 `.bin` 放到手机可访问的位置即可：
+**方式 A（推荐）：App 内片段库**
+推到 App 私有目录，App 右上角点 **CLIPS** 直接列出，不需要系统文件选择器：
+
+```bash
+adb push testdata/packs/water_please_t01.bin /sdcard/Android/data/com.sign2speak.app/files/
+```
+
+**方式 B：系统文件选择器（`.BIN` 按钮）**
+放到 `/sdcard/Download/`，在 App 里点 `.BIN` 选择。注意 OPPO 等厂商的文件管理器通常不显示 `.bin` 这类未识别类型，可能需要先复制成 `.mp4` 扩展名（App 只校验 `S2SF` 文件头，不看扩展名）。
 
 ```bash
 adb push testdata/packs/water_please_t01.bin /sdcard/Download/
 ```
-
-然后在 App 里选择本地文件回放。
