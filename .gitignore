@@ -28,6 +28,9 @@ build/
 *.npy
 *.npz
 
+# Local evaluation captures (raw logcat, events, CSVs)
+eval/runs/
+
 # IDE
 .vscode/
 .idea/

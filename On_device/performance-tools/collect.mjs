@@ -112,6 +112,46 @@ export function summarizeSentences(events) {
     };
   });
 }
+export function summarizeM3(events) {
+  const sorted = [...events].sort((a, b) => BigInt(a.t_ns) < BigInt(b.t_ns) ? -1 : BigInt(a.t_ns) > BigInt(b.t_ns) ? 1 : 0);
+  const grouped = new Map();
+  for (const e of sorted) {
+    if (!e.event.startsWith('m3_window_')) continue;
+    const key = `${e.session}/${e.trial_id}/${e.window_id}`;
+    if (!grouped.has(key)) grouped.set(key, []);
+    grouped.get(key).push(e);
+  }
+  const rows = [];
+  for (const list of grouped.values()) {
+    const submitted = list.find(e => e.event === 'm3_window_submitted');
+    const returned = list.find(e => e.event === 'm3_window_returned');
+    const dropped = list.find(e => e.event === 'm3_window_dropped');
+    const timeout = list.find(e => e.event === 'm3_window_timeout');
+    const error = list.find(e => e.event === 'm3_window_error');
+    const stale = list.find(e => e.event === 'm3_window_stale');
+    const base = submitted || returned || dropped || timeout || error || stale || list[0];
+    const status = returned?.status ||
+      (dropped ? 'dropped' : timeout ? 'timeout' : error ? 'error' : stale ? 'stale' : 'submitted_only');
+    rows.push({
+      session: base.session, trial_id: base.trial_id,
+      window_id: base.window_id ?? '', episode_id: base.episode_id ?? '',
+      frame_count: submitted?.frame_count ?? '', bytes: submitted?.bytes ?? '',
+      body_sha256: submitted?.body_sha256 ?? '',
+      status, label: returned?.label || '', confidence: returned?.confidence ?? '',
+      client_ms: returned?.client_ms ?? '',
+      server_queue_ms: returned?.server_queue_ms ?? '',
+      server_preprocess_ms: returned?.server_preprocess_ms ?? '',
+      server_inference_ms: returned?.server_inference_ms ?? '',
+      server_vote_ms: returned?.server_vote_ms ?? '',
+      server_total_ms: returned?.server_total_ms ?? '',
+      network_ms: returned?.client_ms != null && returned?.server_total_ms != null
+        ? Number(returned.client_ms) - Number(returned.server_total_ms) : '',
+      bytes_down: returned?.bytes_down ?? '',
+      reason: dropped?.reason || timeout?.error || error?.error || stale?.reason || '',
+    });
+  }
+  return rows;
+}
 async function main() {
   const args = process.argv.slice(2);
   const value = (name, fallback) => {
@@ -166,6 +206,7 @@ async function main() {
     const rows = summarize(events);
     const words = summarizeWords(events);
     const sentences = summarizeSentences(events);
+    const m3 = summarizeM3(events);
     const notesPath = path.join(out, 'run-notes.json');
     const notes = fs.existsSync(notesPath) ? JSON.parse(fs.readFileSync(notesPath, 'utf8')) : null;
     const annotated = data => data.map(row => ({ ...row,
@@ -175,12 +216,24 @@ async function main() {
     fs.writeFileSync(path.join(out, 'metrics.csv'), toCsv(rows));
     fs.writeFileSync(path.join(out, 'words.csv'), toCsv(annotated(words)));
     fs.writeFileSync(path.join(out, 'sentences.csv'), toCsv(annotated(sentences)));
+    fs.writeFileSync(path.join(out, 'm3.csv'), toCsv(annotated(m3)));
+    const m3Counts = {
+      submitted: events.filter(e => e.event === 'm3_window_submitted').length,
+      returned: events.filter(e => e.event === 'm3_window_returned').length,
+      dropped: events.filter(e => e.event === 'm3_window_dropped').length,
+      timeout: events.filter(e => e.event === 'm3_window_timeout').length,
+      error: events.filter(e => e.event === 'm3_window_error').length,
+      stale: events.filter(e => e.event === 'm3_window_stale').length,
+      bytes_up: events.filter(e => e.event === 'm3_window_submitted').reduce((sum, e) => sum + Number(e.bytes || 0), 0),
+      bytes_down: events.filter(e => e.event === 'm3_window_returned').reduce((sum, e) => sum + Number(e.bytes_down || 0), 0),
+    };
     fs.writeFileSync(path.join(out, 'capture.json'), JSON.stringify({ events: events.length, rawLines: lineCount,
       trials: new Set(events.map(e => `${e.session}/${e.trial_id}`)).size,
+      m3: m3Counts,
       note: 'Device monotonic timestamps; hand_seen is detection, manual marker is not physical gesture onset. sentence_returned is model return, not screen presentation.',
       include_in_formal_results: notes?.include_in_formal_results ?? 'unclassified',
     }, null, 2));
-    console.log(`Saved ${events.length} events, ${words.length} words and ${sentences.length} sentences to ${out}`);
+    console.log(`Saved ${events.length} events, ${words.length} words, ${sentences.length} sentences and ${m3.length} M3 windows to ${out}`);
     if (!events.length) console.warn('No S2S_PERF events: install the instrumented build and press Start trial. Stock logs cannot reconstruct gesture onset/recognition timestamps.');
   };
   lines.on('line', line => {

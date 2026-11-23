@@ -111,7 +111,9 @@ def main() -> int:
                     help="extra wait for flush + UI settle after the clip")
     ap.add_argument("--package", default="com.sign2speak.app.perf")
     ap.add_argument("--activity", default=".MainActivity")
-    ap.add_argument("--mode", default="remote", choices=["remote", "local"])
+    ap.add_argument("--mode", default="p1",
+                    choices=["p0", "p1", "p2", "remote", "local"])
+    ap.add_argument("--classifier-version", default="islr-conv1d-transformer-v1")
     ap.add_argument("--url", default="http://121.41.19.165:8080")
     ap.add_argument("--device", default=None)
     ap.add_argument("--adb", dest="adb_path", default=shutil.which("adb") or "adb")
@@ -129,6 +131,13 @@ def main() -> int:
         print("Need exactly one authorized device (adb devices).")
         return 2
 
+    mode = {"local": "p0", "remote": "p1"}.get(args.mode, args.mode)
+    git_commit = ""
+    try:
+        git_commit = run(["git", "-C", str(REPO), "rev-parse", "--short", "HEAD"], timeout=5).stdout.strip()
+    except Exception:
+        pass
+
     stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
     run_dir = args.out_root / f"{args.condition}_{stamp}"
     run_dir.mkdir(parents=True, exist_ok=True)
@@ -138,7 +147,10 @@ def main() -> int:
 
     meta = {
         "condition": args.condition,
-        "mode": args.mode,
+        "mode": mode,
+        "pipeline_mode": mode,
+        "classifier_version": args.classifier_version,
+        "git_commit": git_commit,
         "url": args.url,
         "package": args.package,
         "reps": args.reps,
