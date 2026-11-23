@@ -31,7 +31,7 @@ private const val FACE_EVERY_N = 3
 
 class CameraManager(
     private val context: Context,
-    private val onFrame: (handResult: HandLandmarkerResult?, faceResult: FaceLandmarkerResult?, timestampMs: Long, imgW: Int, imgH: Int) -> Unit,
+    private val onFrame: (handResult: HandLandmarkerResult?, faceResult: FaceLandmarkerResult?, timestampMs: Long, imgW: Int, imgH: Int, perf: PerfFrame) -> Unit,
 ) {
 
     private val analysisExecutor = Executors.newSingleThreadExecutor()
@@ -131,6 +131,8 @@ class CameraManager(
 
     private fun processFrame(imageProxy: ImageProxy) {
         val timestampMs = frameIndex * 33L
+        val perfTrial = PerfTrace.current
+        val observedNs = PerfTrace.now()
 
         try {
             val bitmap = imageProxy.toRgbaBitmap() ?: return
@@ -157,7 +159,14 @@ class CameraManager(
                 }
             }
 
-            onFrame(handResult, faceResultCache, timestampMs, bitmap.width, bitmap.height)
+            val perf = if (BuildConfig.TIMING_ENABLED) {
+                val handFinishedNs = PerfTrace.now()
+                PerfTrace.observeHand(PerfFrame(perfTrial, observedNs, handFinishedNs, frameIndex),
+                    handResult?.landmarks()?.isNotEmpty() == true)
+            } else {
+                PerfFrame.Disabled
+            }
+            onFrame(handResult, faceResultCache, timestampMs, bitmap.width, bitmap.height, perf)
             frameIndex++
 
         } finally {

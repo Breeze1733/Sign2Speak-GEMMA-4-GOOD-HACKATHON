@@ -68,6 +68,12 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private val pipelineDispatcher = pipelineExecutor.asCoroutineDispatcher()
     private val pipelineScope      = CoroutineScope(SupervisorJob() + pipelineDispatcher)
 
+    private var perfLastInference = -1L
+    private var perfSentenceSeq = 1L
+    private var perfWordOrdinal = 0
+    private var perfLastEpisode = -1L
+    private var perfWordRecorded = false
+    private var perfWordEnded = false
     private var lastStableLabel        = ""
     private var lastTranslatedSentence = ""
     private var lastFrameTimeMs        = 0L
@@ -76,6 +82,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private var lastHandSeenMs         = 0L
 
     init {
+        PerfTrace.begin("", "app_start")
         viewModelScope.launch(Dispatchers.IO) { gloss2Text.initialize() }
         viewModelScope.launch(Dispatchers.IO) {
             _state.update { it.copy(history = loadHistory()) }
@@ -90,18 +97,35 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         timestampMs: Long,
         imgW: Int = 720,
         imgH: Int = 1280,
+        perf: PerfFrame = PerfFrame(PerfTrace.current, PerfTrace.now(), PerfTrace.now(), -1),
     ) {
         if (imgW > 0 && imgH > 0 && (_state.value.cameraWidth != imgW || _state.value.cameraHeight != imgH)) {
             _state.update { it.copy(cameraWidth = imgW, cameraHeight = imgH) }
         }
-        pipelineScope.launch { processFrame(handResult, faceResult, timestampMs) }
+        val enqueuedNs = PerfTrace.now()
+        pipelineScope.launch { processFrame(handResult, faceResult, timestampMs, perf, enqueuedNs) }
     }
 
+    fun beginPerfTrial(expected: String) {
+        // Clear first on the existing pipeline, then mark the new trial.
+        clearBuffer()
+        pipelineScope.launch {
+            perfSentenceSeq = 1L
+            perfWordOrdinal = 0
+            perfLastEpisode = -1L
+            PerfTrace.begin(expected)
+        }
+    }
+
+    fun markPerfGestureEnd() { PerfTrace.event("manual_gesture_end") }
+
     fun manualTranslate() {
+        val submittedNs = PerfTrace.now()
+        val submittedTrial = PerfTrace.current
         pipelineScope.launch {
             val glosses = glossBuffer.currentGlosses().also { glossBuffer.clear() }
             if (glosses.isEmpty()) return@launch
-            startTranslation(glosses)
+            startTranslation(glosses, "manual", submittedNs, submittedTrial)
         }
     }
 
@@ -156,7 +180,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         handResult: HandLandmarkerResult?,
         faceResult: FaceLandmarkerResult?,
         timestampMs: Long,
+        perf: PerfFrame,
+        enqueuedNs: Long,
     ) {
+        val processingNs = PerfTrace.now()
         val now = System.currentTimeMillis()
         if (lastFrameTimeMs > 0L) {
             fpsSamples.addLast(1000f / (now - lastFrameTimeMs).coerceAtLeast(1L))
@@ -170,6 +197,42 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         val hasHand     = rec.hasHand
         val currentSign = rec.topLabel
         val currentConf = rec.topConf
+        if (BuildConfig.TIMING_ENABLED && hasHand && perf.episodeId != perfLastEpisode) {
+            perfLastEpisode = perf.episodeId
+            perfWordOrdinal++
+            perfWordRecorded = false
+            perfWordEnded = false
+            PerfTrace.event("word_started", perf.trial,
+                "sentence_id" to perfSentenceSeq, "word_index" to perfWordOrdinal,
+                "episode_id" to perf.episodeId, "start_ns" to perf.firstHandNs.toString(),
+                "hand_seen_ns" to perf.firstHandDetectedNs.toString())
+        }
+        if (!hasHand && perfWordOrdinal > 0 && !perfWordEnded) {
+            perfWordEnded = true
+            PerfTrace.event("word_hand_removed", perf.trial,
+                "sentence_id" to perfSentenceSeq, "word_index" to perfWordOrdinal,
+                "episode_id" to perf.episodeId, "removed_ns" to perf.observedNs.toString())
+        }
+        if (rec.inferenceSerial != perfLastInference) {
+            perfLastInference = rec.inferenceSerial
+            if (currentSign.isNotEmpty()) {
+                PerfTrace.event("recognition_result", perf.trial,
+                    "frame_id" to perf.frameId, "label" to currentSign,
+                    "sentence_id" to perfSentenceSeq, "word_index" to perfWordOrdinal,
+                    "episode_id" to perf.episodeId,
+                    "confidence" to currentConf, "accepted_threshold" to (currentConf >= 0.5f),
+                    "frame_observed_ns" to perf.observedNs.toString(),
+                    "pipeline_queue_ms" to (processingNs - enqueuedNs) / 1e6,
+                    "classification_call_ms" to (PerfTrace.now() - processingNs) / 1e6)
+                if (hasHand && currentConf >= 0.5f && !perfWordRecorded && perfWordOrdinal > 0) {
+                    perfWordRecorded = true
+                    PerfTrace.event("word_recognized", perf.trial,
+                        "sentence_id" to perfSentenceSeq, "word_index" to perfWordOrdinal,
+                        "episode_id" to perf.episodeId, "label" to currentSign,
+                        "confidence" to currentConf)
+                }
+            }
+        }
 
         // Seuil 50% : on n'accepte un nouveau signe que s'il est suffisamment confiant.
         if (currentSign.isNotEmpty() && currentConf >= 0.5f && currentSign != lastStableLabel) {
@@ -190,7 +253,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 glossBuffer.clear()
                 lastStableLabel = ""
                 lastHandSeenMs  = 0L
-                startTranslation(glosses)
+                startTranslation(glosses, "auto")
             } else {
                 lastHandSeenMs = 0L
             }
@@ -210,11 +273,26 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    private fun startTranslation(glosses: List<String>) {
+    private fun startTranslation(
+        glosses: List<String>, trigger: String,
+        submittedNs: Long = PerfTrace.now(), trial: PerfTrial = PerfTrace.current,
+    ) {
+        val requestId = PerfTrace.nextRequest()
+        val sentenceId = perfSentenceSeq
+        val wordCount = perfWordOrdinal
+        perfSentenceSeq++
+        perfWordOrdinal = 0
+        PerfTrace.event("sentence_submitted", trial, "request_id" to requestId,
+            "sentence_id" to sentenceId, "word_count" to wordCount,
+            "trigger" to trigger, "submitted_ns" to submittedNs.toString(),
+            "glosses" to glosses.joinToString(" "))
         val style = _state.value.style
         viewModelScope.launch(Dispatchers.Default) {
             _state.update { it.copy(isTranslating = true) }
-            val sentence   = gloss2Text.translate(glosses, style)
+            PerfTrace.event("generation_started", trial, "request_id" to requestId)
+            val sentence = gloss2Text.translate(glosses, style, trial, requestId)
+            PerfTrace.event("sentence_returned", trial, "request_id" to requestId,
+                "text" to sentence, "submit_to_return_ms" to (PerfTrace.now() - submittedNs) / 1e6)
             val entry      = HistoryEntry(System.currentTimeMillis(), glosses, sentence)
             val newHistory = (_state.value.history + entry).takeLast(20)
             _state.update { it.copy(translatedSentence = sentence, isTranslating = false, history = newHistory) }
@@ -222,7 +300,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             // TTS uniquement si le LLM est chargé — pas le fallback texte brut
             if (gloss2Text.isAvailable && sentence.isNotBlank() && sentence != lastTranslatedSentence) {
                 lastTranslatedSentence = sentence
-                if (!_state.value.isMuted) tts.speak(sentence)
+                if (!_state.value.isMuted) tts.speak(sentence, trial, requestId)
             }
         }
     }

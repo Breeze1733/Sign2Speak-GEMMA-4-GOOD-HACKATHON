@@ -20,7 +20,7 @@
         android:dataExtractionRules="@xml/data_extraction_rules"
         android:fullBackupContent="@xml/backup_rules"
         android:icon="@mipmap/ic_launcher"
-        android:label="@string/app_name"
+        android:label="${appLabel}"
         android:roundIcon="@mipmap/ic_launcher_round"
         android:supportsRtl="true"
         android:theme="@style/Theme.Sign2SpeakOnDevice"
@@ -32,9 +32,9 @@
         <uses-native-library android:name="libOpenCL.so" android:required="false"/>
 
         <activity
-            android:name=".MainActivity"
+            android:name="com.sign2speak.app.MainActivity"
             android:exported="true"
-            android:label="@string/app_name"
+            android:label="${appLabel}"
             android:theme="@style/Theme.Sign2SpeakOnDevice"
             android:screenOrientation="portrait"
             android:configChanges="orientation|screenSize|keyboardHidden">

@@ -28,6 +28,8 @@
 
 See [README_INSTALL.md](README_INSTALL.md) for ADB fallback instructions and usage details.
 
+For the Android timing build, see [真机性能测试](On_device/performance-tools/README.md).
+
 ---
 
 ## Tech stack

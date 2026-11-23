@@ -4,12 +4,16 @@ plugins {
     alias(libs.plugins.kotlin.compose)
 }
 
+val timingEnabled = providers.gradleProperty("sign2speakTiming").orNull == "true"
+
 android {
     namespace = "com.sign2speak.app"
     compileSdk = 36
 
     defaultConfig {
-        applicationId = "com.sign2speak.app"
+        applicationId = if (timingEnabled) "com.sign2speak.app.perf" else "com.sign2speak.app"
+        manifestPlaceholders["appLabel"] = if (timingEnabled) "Sign2Speak Timing" else "@string/app_name"
+        buildConfigField("boolean", "TIMING_ENABLED", timingEnabled.toString())
         minSdk = 29
         targetSdk = 36
         versionCode = 1
@@ -44,6 +48,7 @@ android {
     }
 
     buildFeatures {
+        buildConfig = true
         compose = true
     }
 
@@ -93,7 +98,8 @@ dependencies {
     // MediaPipe Tasks (vision : HandLandmarker + FaceLandmarker)
     implementation(libs.mediapipe.tasks.vision)
     // LiteRT-LM — Gemma 4 E2B on-device (remplace MediaPipe LLM Inference)
-    implementation("com.google.ai.edge.litertlm:litertlm-android:latest.release")
+    val liteRtLmVersion = if (timingEnabled) "0.19.0" else "latest.release"
+    implementation("com.google.ai.edge.litertlm:litertlm-android:$liteRtLmVersion")
 
     // TFLite runtime (arm64-v8a + x86_64)
     implementation("org.tensorflow:tensorflow-lite:2.16.1")

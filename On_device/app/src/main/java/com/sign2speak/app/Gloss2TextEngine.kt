@@ -115,7 +115,8 @@ Examples of semantic inference with our current 50-sign vocabulary:
      * Traduit une liste de glosses ASL en phrase anglaise.
      * Initialise Gemma automatiquement au premier appel.
      */
-    suspend fun translate(glosses: List<String>, style: String = "friendly"): String =
+    suspend fun translate(glosses: List<String>, style: String = "friendly",
+        perfTrial: PerfTrial = PerfTrace.current, perfRequest: String = ""): String =
         withContext(Dispatchers.IO) {
             if (glosses.isEmpty()) return@withContext ""
             if (!isInitialized) initialize()
@@ -123,7 +124,10 @@ Examples of semantic inference with our current 50-sign vocabulary:
             val glossStr = glosses.joinToString(" ")
             Log.i(TAG, "Traduction [$style] : $glossStr")
 
-            val eng = engine ?: return@withContext fallback(glossStr)
+            val eng = engine ?: run {
+                PerfTrace.event("generation_status", perfTrial, "request_id" to perfRequest, "status" to "model_unavailable")
+                return@withContext fallback(glossStr)
+            }
 
             val styleNote = when (style) {
                 "professional" -> "formal, clear, suitable for medical/business contexts"
@@ -140,12 +144,16 @@ Examples of semantic inference with our current 50-sign vocabulary:
                 )
                 val response = conversation.sendMessage("ASL glosses: $glossStr")
                 conversation.close()
-                response.toString()
+                val generated = response.toString()
                     .replace("<end_of_turn>", "")
                     .replace("<eos>", "")
                     .trim()
-                    .takeIf { it.isNotBlank() } ?: glossStr
+                    .takeIf { it.isNotBlank() }
+                PerfTrace.event("generation_status", perfTrial, "request_id" to perfRequest,
+                    "status" to if (generated == null) "empty_output" else "generated")
+                generated ?: glossStr
             } catch (e: Exception) {
+                PerfTrace.event("generation_status", perfTrial, "request_id" to perfRequest, "status" to "generation_error", "error" to (e.message ?: ""))
                 Log.e(TAG, "Erreur génération Gemma : ${e.message}")
                 fallback(glossStr)
             }

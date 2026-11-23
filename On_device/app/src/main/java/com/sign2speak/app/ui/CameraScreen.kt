@@ -56,6 +56,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
 import com.sign2speak.app.AppState
+import com.sign2speak.app.BuildConfig
 import com.sign2speak.app.CameraManager
 import com.sign2speak.app.DetectedHand
 import com.sign2speak.app.HistoryEntry
@@ -91,7 +92,7 @@ fun CameraScreen(viewModel: MainViewModel) {
     val lifecycleOwner = LocalLifecycleOwner.current
 
     val cameraManager = remember {
-        CameraManager(context) { hand, face, ts, imgW, imgH -> viewModel.onFrameProcessed(hand, face, ts, imgW, imgH) }
+        CameraManager(context) { hand, face, ts, imgW, imgH, perf -> viewModel.onFrameProcessed(hand, face, ts, imgW, imgH, perf) }
     }
     val previewView = remember {
         PreviewView(context).apply {
@@ -129,6 +130,7 @@ fun CameraScreen(viewModel: MainViewModel) {
                 verticalArrangement = Arrangement.spacedBy(4.dp),
             ) {
                 StatusPanel(state)
+                if (BuildConfig.TIMING_ENABLED) PerfTestPanel(viewModel)
                 HistoryPanel(
                     history  = state.history,
                     onReplay = { entry -> viewModel.replaySentence(entry.interpretation) },

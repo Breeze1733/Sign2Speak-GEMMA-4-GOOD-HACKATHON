@@ -82,6 +82,7 @@ data class RecognitionResult(
     val topConf: Float,
     val top3: List<Pair<String, Float>>,
     val hasHand: Boolean,
+    val inferenceSerial: Long = 0,
     val detectedHands: List<DetectedHand> = emptyList(),
     val faceDots: List<LandmarkPoint> = emptyList(),
 )
@@ -99,6 +100,7 @@ class SignRecognizer(private val context: Context) {
     private val frameBuffer = ArrayDeque<FloatArray>(MAX_LEN + 1)
     private val predictionHistory = ArrayDeque<Int>(PREDICTION_HISTORY_SIZE + 1)
 
+    private var inferenceSerial = 0L
     private var frameIndex = 0
     private var currentLabel = ""
     private var currentConf  = 0f
@@ -153,6 +155,7 @@ class SignRecognizer(private val context: Context) {
             topConf      = currentConf,
             top3         = currentTop3,
             hasHand      = hasHand,
+            inferenceSerial = inferenceSerial,
             detectedHands = extractHandOverlay(handResult),
             faceDots      = extractFaceOverlay(faceResult),
         )
@@ -330,6 +333,7 @@ class SignRecognizer(private val context: Context) {
             return
         }
 
+        if (BuildConfig.TIMING_ENABLED) inferenceSerial++
         val logits = outputArray[0]
         val probs  = softmax(logits)
 
