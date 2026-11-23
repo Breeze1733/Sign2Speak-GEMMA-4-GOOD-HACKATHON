@@ -1,10 +1,10 @@
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import readline from 'node:readline';
 import { spawn, spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 
-const root = path.dirname(fileURLToPath(import.meta.url));
 export function parseEvent(line) {
   const start = line.indexOf('{');
   if (start < 0) return null;
@@ -142,7 +142,7 @@ async function main() {
     // -T 1 starts near the present; never clears the device log buffer.
     child = spawn(adb, [...prefix, 'logcat', '-T', '1', '-v', 'threadtime', 'S2S_PERF:I', 'Gloss2TextEngine:I', 'SignRecognizer:I', 'CameraManager:I', 'TtsEngine:I', '*:S'], { windowsHide: true });
   }
-  const out = path.resolve(value('--out', path.join(root, 'results', new Date().toISOString().replaceAll(':', '-'))));
+  const out = path.resolve(value('--out', path.join(os.homedir(), 'Sign2SpeakTiming', 'results', new Date().toISOString().replaceAll(':', '-'))));
   if (input && path.resolve(input) === path.join(out, 'raw-logcat.txt')) {
     if (child) child.kill();
     throw new Error('Input log and output raw-logcat.txt must be different paths. Choose a new --out folder.');

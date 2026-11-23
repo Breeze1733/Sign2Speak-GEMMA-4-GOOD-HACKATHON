@@ -2,7 +2,19 @@
 
 **Sign2Speak Timing** 记录手部首次检出、词语识别和句子生成的时间。通过 `-Psign2speakTiming=true` 构建，包名为 `com.sign2speak.app.perf`，可与原版并排安装。手势分类和句子生成均在手机本地运行。
 
-## 构建和安装
+## 安装已有 APK
+
+收到组内已有的测试版 APK 后，在 **Android 10 及以上、ARM64** 的手机上直接打开安装。如果手机提示来源权限，请允许用于打开 APK 的应用安装。
+
+打开 **Sign2Speak Timing** 并允许相机权限。首次使用时点击 **Download Gemma model**，建议用 Wi-Fi 下载约 **2.58 GB** 的模型。已有同名模型文件时，也可以先安装测试版，再用 ADB 将模型复制到测试应用目录。
+
+```sh
+adb push gemma-4-E2B-it.litertlm /sdcard/Android/data/com.sign2speak.app.perf/files/
+```
+
+## 按需从源码构建 APK
+
+手上没有测试 APK，或需要测试代码的新改动时，可以从本 PR 构建。
 
 电脑需要 JDK 17 或 21，以及 Android SDK Platform 36。建议用 Android Studio 打开 `On_device` 配置 SDK，也可以设置 `ANDROID_HOME`。Windows 下请把仓库放在纯英文路径，例如 `C:/dev/Sign2Speak`，以通过 Android Gradle 插件的路径检查。
 
@@ -12,13 +24,7 @@
 .\gradlew.bat :app:assembleDebug -Psign2speakTiming=true
 ```
 
-macOS 和 Linux 使用 `bash ./gradlew`。APK 生成于 `On_device/app/build/outputs/apk/debug/app-debug.apk`，可以发给组员在 **Android 10 及以上、ARM64** 的手机上安装。如果手机提示来源权限，请允许用于打开 APK 的应用安装。
-
-打开 **Sign2Speak Timing** 并允许相机权限。首次使用时点击 **Download Gemma model**，建议用 Wi-Fi 下载约 **2.58 GB** 的模型。已有同名模型文件时，也可以先安装测试版，再用 ADB 将模型复制到测试应用目录。
-
-```sh
-adb push gemma-4-E2B-it.litertlm /sdcard/Android/data/com.sign2speak.app.perf/files/
-```
+macOS 和 Linux 使用 `bash ./gradlew`。APK 生成于 `On_device/app/build/outputs/apk/debug/app-debug.apk`，可以直接发给组员。
 
 ## 采集日志
 
@@ -30,7 +36,7 @@ adb push gemma-4-E2B-it.litertlm /sdcard/Android/data/com.sign2speak.app.perf/fi
 node performance-tools/collect.mjs --seconds 600
 ```
 
-有多台设备时加 `--device SERIAL`，也可用 `--adb PATH` 指定 ADB 路径。采集到时自动结束，也可按 Ctrl+C 结束。请等最后一句返回再停止。输出写入 `performance-tools/results/`。
+有多台设备时加 `--device SERIAL`，也可用 `--adb PATH` 指定 ADB 路径。采集到时自动结束，也可按 Ctrl+C 结束。请等最后一句返回再停止。结果默认保存在用户主目录的 `Sign2SpeakTiming/results/`，可用 `--out DIR` 指定其他目录。
 
 ## 测试步骤
 
