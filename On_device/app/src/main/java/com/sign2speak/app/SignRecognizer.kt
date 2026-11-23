@@ -14,68 +14,18 @@ import kotlin.math.sqrt
 
 private const val TAG = "SignRecognizer"
 
-// ─── Constantes du preprocessing (identiques à live_winner.py) ─────────────
+// ─── Layout constants (canonical definitions live in LandmarkLayout.kt) ─────
 
-/** Nombre total de rows dans l'assemblage Holistic. */
-private const val ROWS_PER_FRAME = 543
-
-/** holistic[0..467] = face landmarks (478 points en tout, 0-based index 0..477). */
-/** Pour les mains, on utilise la convention MediaPipe Tasks vs Holistic :
- *  "Right" (caméra POV) → offset 468 (left_hand dans l'index Holistic gagnant)
- *  "Left"  (caméra POV) → offset 522 (right_hand dans l'index Holistic gagnant)
- */
-private const val LEFT_HAND_OFFSET  = 468   // holistic index for left hand
-private const val RIGHT_HAND_OFFSET = 522   // holistic index for right hand
-private const val HAND_NUM_LANDMARKS = 21
-
-private val NOSE  = intArrayOf(1, 2, 98, 327)
-private val LIP   = intArrayOf(
-    0, 61, 185, 40, 39, 37, 267, 269, 270, 409,
-    291, 146, 91, 181, 84, 17, 314, 405, 321, 375,
-    78, 191, 80, 81, 82, 13, 312, 311, 310, 415,
-    95, 88, 178, 87, 14, 317, 402, 318, 324, 308
-)
-private val REYE  = intArrayOf(33, 7, 163, 144, 145, 153, 154, 155, 133, 246, 161, 160, 159, 158, 157, 173)
-private val LEYE  = intArrayOf(263, 249, 390, 373, 374, 380, 381, 382, 362, 466, 388, 387, 386, 385, 384, 398)
-private val LHAND = IntArray(21) { 468 + it }  // 21 pts
-private val RHAND = IntArray(21) { 522 + it }  // 21 pts
-
-/** 118 landmarks utilisés pour la classification. */
-private val POINT_LANDMARKS: IntArray = LIP + LHAND + RHAND + NOSE + REYE + LEYE
-
-private const val NUM_NODES = 118       // LIP(40) + LHAND(21) + RHAND(21) + NOSE(4) + REYE(16) + LEYE(16)
-private const val CHANNELS  = 708       // 6 * 118
-private const val MAX_LEN   = 64
-private const val PAD       = -100f
-
-/** Index du nez pour le centrage (holistic[17] = LIP[15]). */
-private const val NOSE_HOLISTIC_IDX = 17
-
-/** Nombre de prédictions conservées pour le vote majoritaire. */
-private const val PREDICTION_HISTORY_SIZE = 8
-
-/** Seuil minimal de confiance pour valider une prédiction. */
-private const val DEFAULT_THRESHOLD = 0.2f
-
-/** On soumet une inférence toutes les N frames. */
-private const val INFER_EVERY_N = 3
-
-/** Nb minimum de frames dans le buffer avant d'inférer. */
-private const val MIN_FRAMES_FOR_INFER = 10
-
-private val FACE_OVERLAY_IDX = listOf(
-    // LIP (40)
-    0, 61, 185, 40, 39, 37, 267, 269, 270, 409,
-    291, 146, 91, 181, 84, 17, 314, 405, 321, 375,
-    78, 191, 80, 81, 82, 13, 312, 311, 310, 415,
-    95, 88, 178, 87, 14, 317, 402, 318, 324, 308,
-    // NOSE (4)
-    1, 2, 98, 327,
-    // RIGHT EYE (16)
-    33, 7, 163, 144, 145, 153, 154, 155, 133, 246, 161, 160, 159, 158, 157, 173,
-    // LEFT EYE (16)
-    263, 249, 390, 373, 374, 380, 381, 382, 362, 466, 388, 387, 386, 385, 384, 398,
-)
+private const val NUM_NODES = LandmarkLayout.NUM_NODES
+private const val CHANNELS = LandmarkLayout.CHANNELS
+private const val MAX_LEN = LandmarkLayout.MAX_LEN
+private const val PAD = LandmarkLayout.PAD
+private const val NOSE_HOLISTIC_IDX = LandmarkLayout.NOSE_HOLISTIC_IDX
+private const val PREDICTION_HISTORY_SIZE = LandmarkLayout.PREDICTION_HISTORY_SIZE
+private const val DEFAULT_THRESHOLD = LandmarkLayout.DEFAULT_THRESHOLD
+private const val INFER_EVERY_N = LandmarkLayout.INFER_EVERY_N
+private const val MIN_FRAMES_FOR_INFER = LandmarkLayout.MIN_FRAMES_FOR_INFER
+private val POINT_LANDMARKS: IntArray = LandmarkLayout.POINT_LANDMARKS
 
 data class RecognitionResult(
     val topLabel: String,
@@ -83,6 +33,7 @@ data class RecognitionResult(
     val top3: List<Pair<String, Float>>,
     val hasHand: Boolean,
     val inferenceSerial: Long = 0,
+    val inferenceCount: Long = 0,
     val detectedHands: List<DetectedHand> = emptyList(),
     val faceDots: List<LandmarkPoint> = emptyList(),
 )
@@ -101,6 +52,7 @@ class SignRecognizer(private val context: Context) {
     private val predictionHistory = ArrayDeque<Int>(PREDICTION_HISTORY_SIZE + 1)
 
     private var inferenceSerial = 0L
+    private var inferenceCount = 0L
     private var frameIndex = 0
     private var currentLabel = ""
     private var currentConf  = 0f
@@ -138,11 +90,11 @@ class SignRecognizer(private val context: Context) {
         timestampMs: Long
     ): RecognitionResult {
 
-        val holistic = assembleHolistic(handResult, faceResult)
+        val holistic = HolisticAssembler.assemble(handResult, faceResult)
         frameBuffer.addLast(holistic)
         if (frameBuffer.size > MAX_LEN) frameBuffer.removeFirst()
 
-        val hasHand = handResult != null && handResult.landmarks().isNotEmpty()
+        val hasHand = HolisticAssembler.hasHand(handResult)
 
         if (interpreter != null && frameIndex % INFER_EVERY_N == 0 && frameBuffer.size >= MIN_FRAMES_FOR_INFER) {
             runInference(hasHand)
@@ -156,68 +108,10 @@ class SignRecognizer(private val context: Context) {
             top3         = currentTop3,
             hasHand      = hasHand,
             inferenceSerial = inferenceSerial,
-            detectedHands = extractHandOverlay(handResult),
-            faceDots      = extractFaceOverlay(faceResult),
+            inferenceCount = inferenceCount,
+            detectedHands = HolisticAssembler.extractHandOverlay(handResult),
+            faceDots      = HolisticAssembler.extractFaceOverlay(faceResult),
         )
-    }
-
-    private fun extractHandOverlay(r: HandLandmarkerResult?): List<DetectedHand> {
-        if (r == null) return emptyList()
-        val lmsList = r.landmarks()
-        if (lmsList.isEmpty()) return emptyList()
-        return lmsList.mapIndexed { i, lms ->
-            // Front camera on this device: MediaPipe "Left" = user's left hand
-            val isLeft = r.handedness().getOrNull(i)?.firstOrNull()?.categoryName() == "Left"
-            DetectedHand(lms.map { lm -> LandmarkPoint(lm.x(), lm.y()) }, isLeft)
-        }
-    }
-
-    private fun extractFaceOverlay(r: FaceLandmarkerResult?): List<LandmarkPoint> {
-        if (r == null) return emptyList()
-        val faces = r.faceLandmarks()
-        if (faces.isEmpty()) return emptyList()
-        val lms = faces[0]
-        return FACE_OVERLAY_IDX.mapNotNull { idx ->
-            if (idx < lms.size) LandmarkPoint(lms[idx].x(), lms[idx].y()) else null
-        }
-    }
-
-    private fun assembleHolistic(
-        handResult: HandLandmarkerResult?,
-        faceResult: FaceLandmarkerResult?,
-    ): FloatArray {
-        val holistic = FloatArray(ROWS_PER_FRAME * 3) { Float.NaN }
-
-        if (faceResult != null && faceResult.faceLandmarks().isNotEmpty()) {
-            val lms = faceResult.faceLandmarks()[0]
-            val count = minOf(lms.size, 468)
-            for (i in 0 until count) {
-                val lm = lms[i]
-                holistic[i * 3 + 0] = lm.x()
-                holistic[i * 3 + 1] = lm.y()
-                holistic[i * 3 + 2] = lm.z()
-            }
-        }
-
-        if (handResult != null && handResult.landmarks().isNotEmpty()) {
-            // Match live_winner.py: no score filter, take all detected hands (max 2)
-            for (hIdx in 0 until minOf(handResult.landmarks().size, 2)) {
-                if (hIdx >= handResult.handedness().size) break
-                val label = handResult.handedness()[hIdx][0].categoryName()
-                val lms   = handResult.landmarks()[hIdx]
-                // "Left" = user left hand → LHAND offset 468 (matches live_winner.py LHAND)
-                // "Right" = user right hand → RHAND offset 522 (matches live_winner.py RHAND)
-                val offset = if (label == "Left") LEFT_HAND_OFFSET else RIGHT_HAND_OFFSET
-                for (i in 0 until minOf(lms.size, HAND_NUM_LANDMARKS)) {
-                    val lm = lms[i]
-                    holistic[(offset + i) * 3 + 0] = lm.x()
-                    holistic[(offset + i) * 3 + 1] = lm.y()
-                    holistic[(offset + i) * 3 + 2] = lm.z()
-                }
-            }
-        }
-
-        return holistic
     }
 
     private fun runInference(hasHand: Boolean) {
@@ -334,6 +228,7 @@ class SignRecognizer(private val context: Context) {
         }
 
         if (BuildConfig.TIMING_ENABLED) inferenceSerial++
+        inferenceCount++
         val logits = outputArray[0]
         val probs  = softmax(logits)
 
@@ -368,6 +263,7 @@ class SignRecognizer(private val context: Context) {
         currentConf  = 0f
         currentTop3  = emptyList()
         frameIndex   = 0
+        inferenceCount = 0L
     }
 
     fun close() {
