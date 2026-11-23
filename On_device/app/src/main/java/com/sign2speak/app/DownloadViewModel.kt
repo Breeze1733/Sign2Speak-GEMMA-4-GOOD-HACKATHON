@@ -13,9 +13,12 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import java.io.File
 
-private const val MODEL_URL =
-    "https://huggingface.co/litert-community/gemma-4-E2B-it-litert-lm/resolve/main/gemma-4-E2B-it.litertlm"
 private const val MODEL_FILENAME = "gemma-4-E2B-it.litertlm"
+
+private val MODEL_URLS = listOf(
+    "https://hf-mirror.com/litert-community/gemma-4-E2B-it-litert-lm/resolve/main/gemma-4-E2B-it.litertlm",
+    "https://huggingface.co/litert-community/gemma-4-E2B-it-litert-lm/resolve/main/gemma-4-E2B-it.litertlm",
+)
 
 sealed class DownloadState {
     object Idle        : DownloadState()
@@ -37,23 +40,46 @@ class DownloadViewModel(application: Application) : AndroidViewModel(application
 
     fun startDownload() {
         if (_downloadState.value is DownloadState.Downloading) return
+        downloadFrom(0)
+    }
+
+    /** Tries [MODEL_URLS] in order; a failed attempt is removed before the next. */
+    private fun downloadFrom(index: Int) {
+        if (index >= MODEL_URLS.size) {
+            _downloadState.value = DownloadState.Error("All download sources failed")
+            return
+        }
 
         val app = getApplication<Application>()
         val dm  = app.getSystemService(Context.DOWNLOAD_SERVICE) as DownloadManager
 
-        val request = DownloadManager.Request(Uri.parse(MODEL_URL))
+        // Clear any partial file so a retry starts clean.
+        runCatching { modelFile.delete() }
+
+        val request = DownloadManager.Request(Uri.parse(MODEL_URLS[index]))
             .setTitle("Sign2Speak — Gemma 4 model")
-            .setDescription("Downloading Gemma 4 E2B (2.58 GB)…")
+            .setDescription(
+                if (index == 0) "Downloading Gemma 4 E2B (2.58 GB)…"
+                else "Retrying from source ${index + 1} of ${MODEL_URLS.size}…"
+            )
             .setDestinationInExternalFilesDir(app, null, MODEL_FILENAME)
             .setNotificationVisibility(DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED)
             .setAllowedOverMetered(true)
             .setAllowedOverRoaming(false)
 
         val downloadId = dm.enqueue(request)
-        viewModelScope.launch { pollProgress(dm, downloadId) }
+        viewModelScope.launch {
+            val ok = pollProgress(dm, downloadId)
+            if (!ok) {
+                runCatching { dm.remove(downloadId) }
+                runCatching { modelFile.delete() }
+                downloadFrom(index + 1)
+            }
+        }
     }
 
-    private suspend fun pollProgress(dm: DownloadManager, id: Long) {
+    /** Returns true when the model is complete, false when this source failed. */
+    private suspend fun pollProgress(dm: DownloadManager, id: Long): Boolean {
         _downloadState.value = DownloadState.Downloading(0f, 0f, 2580f)
 
         while (true) {
@@ -62,26 +88,21 @@ class DownloadViewModel(application: Application) : AndroidViewModel(application
 
             if (!cursor.moveToFirst()) {
                 cursor.close()
-                _downloadState.value = DownloadState.Error("Téléchargement annulé")
-                return
+                return false
             }
 
             val status     = cursor.getInt(cursor.getColumnIndexOrThrow(DownloadManager.COLUMN_STATUS))
             val downloaded = cursor.getLong(cursor.getColumnIndexOrThrow(DownloadManager.COLUMN_BYTES_DOWNLOADED_SO_FAR))
             val total      = cursor.getLong(cursor.getColumnIndexOrThrow(DownloadManager.COLUMN_TOTAL_SIZE_BYTES))
-            val reason     = cursor.getInt(cursor.getColumnIndexOrThrow(DownloadManager.COLUMN_REASON))
             cursor.close()
 
             when (status) {
                 DownloadManager.STATUS_SUCCESSFUL -> {
                     _modelReady.value    = true
                     _downloadState.value = DownloadState.Done
-                    return
+                    return true
                 }
-                DownloadManager.STATUS_FAILED -> {
-                    _downloadState.value = DownloadState.Error("Échec (code $reason)")
-                    return
-                }
+                DownloadManager.STATUS_FAILED -> return false
                 else -> {
                     val dlMb    = downloaded / 1_048_576f
                     val totalMb = if (total > 0) total / 1_048_576f else 2580f
