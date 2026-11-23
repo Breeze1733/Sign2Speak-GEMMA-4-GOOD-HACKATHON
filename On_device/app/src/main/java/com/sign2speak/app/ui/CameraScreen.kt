@@ -273,11 +273,12 @@ fun CameraScreen(
                     onOpenClips = { showClipsDialog = true },
                 )
                 TranslationModePanel(
-                    mode       = state.translationMode,
-                    lastSource = state.lastSource,
-                    lastStatus = state.lastStatus,
-                    onToggle   = { viewModel.toggleTranslationMode() },
-                    onConfigure= { showRemoteDialog = true },
+                    mode         = state.pipelineMode,
+                    lastSource   = state.lastSource,
+                    lastStatus   = state.lastStatus,
+                    lastM3Status = state.lastM3Status,
+                    onSelect     = { viewModel.setPipelineMode(it) },
+                    onConfigure  = { showRemoteDialog = true },
                 )
                 Top3Panel(state)
             }
@@ -775,15 +776,16 @@ private fun HeardTextPanel(text: String, isListening: Boolean, modifier: Modifie
     }
 }
 
-// ─── P1 translation mode (local P0 / remote P1) ──────────────────────────────
+// ─── Pipeline mode (P0 local / P1 remote G2T / P2 remote M3+G2T) ─────────────
 
 @Composable
 private fun TranslationModePanel(
-    mode       : String,
-    lastSource : String,
-    lastStatus : String,
-    onToggle   : () -> Unit,
-    onConfigure: () -> Unit,
+    mode         : String,
+    lastSource   : String,
+    lastStatus   : String,
+    lastM3Status : String,
+    onSelect     : (String) -> Unit,
+    onConfigure  : () -> Unit,
 ) {
     Column(
         modifier = Modifier
@@ -793,32 +795,19 @@ private fun TranslationModePanel(
         verticalArrangement = Arrangement.spacedBy(4.dp),
     ) {
         Row(
-            horizontalArrangement = Arrangement.spacedBy(6.dp),
+            horizontalArrangement = Arrangement.spacedBy(4.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            Box(
-                modifier = Modifier
-                    .background(
-                        if (mode == "remote") Color(0xFF00695C) else Color(0xFF4E342E),
-                        RoundedCornerShape(6.dp),
-                    )
-                    .clickable { onToggle() }
-                    .padding(horizontal = 8.dp, vertical = 4.dp),
-            ) {
-                Text(
-                    text       = if (mode == "remote") "G2T REMOTE" else "G2T LOCAL",
-                    color      = White,
-                    fontSize   = 11.sp,
-                    fontWeight = FontWeight.Bold,
-                )
-            }
+            ModeChip("P0 LOCAL", mode == "p0", Color(0xFF4E342E)) { onSelect("p0") }
+            ModeChip("P1 G2T", mode == "p1", Color(0xFF00695C)) { onSelect("p1") }
+            ModeChip("P2 M3", mode == "p2", Color(0xFF283593)) { onSelect("p2") }
             Box(
                 modifier = Modifier
                     .background(Color(0xFF263238), RoundedCornerShape(6.dp))
                     .clickable { onConfigure() }
-                    .padding(horizontal = 8.dp, vertical = 4.dp),
+                    .padding(horizontal = 7.dp, vertical = 4.dp),
             ) {
-                Text("CFG", color = White, fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                Text("CFG", color = White, fontSize = 10.sp, fontWeight = FontWeight.Bold)
             }
         }
         if (lastSource.isNotEmpty()) {
@@ -828,9 +817,44 @@ private fun TranslationModePanel(
                 fontSize = 9.sp,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
-                modifier = Modifier.widthIn(max = 190.dp),
+                modifier = Modifier.widthIn(max = 230.dp),
             )
         }
+        if (mode == "p2") {
+            Text(
+                text = "M3: ${lastM3Status.take(20)}",
+                color = Color(0xFF80CBC4),
+                fontSize = 9.sp,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.widthIn(max = 230.dp),
+            )
+        }
+    }
+}
+
+@Composable
+private fun ModeChip(
+    label       : String,
+    active      : Boolean,
+    activeColor : Color,
+    onClick     : () -> Unit,
+) {
+    Box(
+        modifier = Modifier
+            .background(
+                if (active) activeColor else Color(0xFF263238),
+                RoundedCornerShape(6.dp),
+            )
+            .clickable { onClick() }
+            .padding(horizontal = 7.dp, vertical = 4.dp),
+    ) {
+        Text(
+            text       = label,
+            color      = White,
+            fontSize   = 10.sp,
+            fontWeight = FontWeight.Bold,
+        )
     }
 }
 
@@ -846,7 +870,7 @@ private fun RemoteSettingsDialog(
 
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text("P1 remote service") },
+        title = { Text("P1/P2 remote service") },
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 OutlinedTextField(
@@ -862,7 +886,7 @@ private fun RemoteSettingsDialog(
                     singleLine    = true,
                 )
                 Text(
-                    "POST /translate · Bearer token · cleartext HTTP",
+                    "P1: POST /translate · P2: POST /recognize\nBearer token · cleartext HTTP",
                     color = Gray,
                     fontSize = 11.sp,
                 )

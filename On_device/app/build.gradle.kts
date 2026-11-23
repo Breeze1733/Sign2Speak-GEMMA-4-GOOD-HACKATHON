@@ -12,6 +12,8 @@ val remoteUrl = providers.gradleProperty("s2sRemoteUrl")
 val remoteToken = providers.gradleProperty("s2sRemoteToken").orElse("").get()
 val remoteModelVersion = providers.gradleProperty("s2sRemoteModel")
     .orElse("gemma-4-E2B-it.litertlm").get()
+val classifierModelVersion = providers.gradleProperty("s2sClassifierVersion")
+    .orElse("islr-conv1d-transformer-v1").get()
 
 android {
     namespace = "com.sign2speak.app"
@@ -24,6 +26,7 @@ android {
         buildConfigField("String", "REMOTE_URL", "\"$remoteUrl\"")
         buildConfigField("String", "REMOTE_TOKEN", "\"$remoteToken\"")
         buildConfigField("String", "REMOTE_MODEL_VERSION", "\"$remoteModelVersion\"")
+        buildConfigField("String", "CLASSIFIER_MODEL_VERSION", "\"$classifierModelVersion\"")
         minSdk = 29
         targetSdk = 36
         versionCode = 1

@@ -63,8 +63,9 @@ class MainActivity : ComponentActivity() {
             MaterialTheme(colorScheme = androidx.compose.material3.darkColorScheme()) {
 
                 val modelReady by downloadViewModel.modelReady.collectAsState()
+                val appState by viewModel.state.collectAsState()
                 var initialBinUri by remember { mutableStateOf<Uri?>(null) }
-                // Remote P1 and bare recognition do not need the 2.58 GB on-device model.
+                // P1 and P2 do not need the 2.58 GB on-device Gemma model.
                 var skipModelGate by remember { mutableStateOf(false) }
 
                 val filePickerLauncher = rememberLauncherForActivityResult(
@@ -77,7 +78,7 @@ class MainActivity : ComponentActivity() {
 
                 when {
                     // ── 1. Modèle absent → écran de téléchargement (skip possible) ──
-                    !modelReady && !skipModelGate ->
+                    !modelReady && !skipModelGate && appState.pipelineMode == "p0" ->
                         ModelDownloadScreen(downloadViewModel) { skipModelGate = true }
 
                     // ── 2. Modèle OK mais caméra refusée (hors mode .bin) ────

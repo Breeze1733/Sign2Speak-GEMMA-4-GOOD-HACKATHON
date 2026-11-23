@@ -4,6 +4,7 @@
   "channels": 708,
   "num_nodes": 118,
   "dim": 192,
+  "model_version": "islr-conv1d-transformer-v1",
   "point_landmarks": [
     0,
     61,

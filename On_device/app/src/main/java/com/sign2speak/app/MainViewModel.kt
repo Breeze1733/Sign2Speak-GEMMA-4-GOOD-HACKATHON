@@ -42,11 +42,12 @@ data class AppState(
     val isMuted: Boolean = false,
     val style: String = "friendly",
     val isTranslating: Boolean = false,
-    val translationMode: String = "local",   // local (P0) | remote (P1)
+    val pipelineMode: String = "p0",          // p0 local | p1 remote G2T | p2 remote M3+G2T
     val remoteUrl: String = "",
     val remoteHasToken: Boolean = false,
     val lastSource: String = "",             // local | remote | local_fallback
     val lastStatus: String = "",
+    val lastM3Status: String = "off",        // off | starting | ready | ok 18ms | busy | timeout ...
     val handDetected: Boolean = false,
     val fps: Float = 0f,
     val detectedHands: List<DetectedHand> = emptyList(),
@@ -65,7 +66,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private val _state = MutableStateFlow(AppState())
     val state: StateFlow<AppState> = _state.asStateFlow()
 
-    private val signRecognizer: SignRecognizer by lazy { SignRecognizer(application) }
+    @Volatile private var controller: RecognitionController? = null
+    private var controllerMode: String? = null
     private val glossBuffer    = GlossBuffer()
     private val gloss2Text: Gloss2TextEngine by lazy { Gloss2TextEngine(application) }
     private val tts: TtsEngine by lazy { TtsEngine(application) }
@@ -87,13 +89,25 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     /** Bumped on clear/cancel; responses from an older epoch are logged and dropped. */
     private val sessionEpoch  = AtomicLong(0L)
 
-    private var perfLastInference = -1L
     private var perfSentenceSeq = 1L
     private var perfWordOrdinal = 0
     private var perfLastEpisode = -1L
-    private var perfWordRecorded = false
     private var perfWordEnded = false
     private var lastStableLabel        = ""
+    private var currentSign            = ""
+    private var currentConf            = 0f
+    private var currentTop3: List<Pair<String, Float>> = emptyList()
+    private var lastRecognitionSerial  = -1L
+    private var lastWordRecordedIndex  = -1
+    private val classifierVersion: String by lazy {
+        try {
+            val raw = application.assets.open("model_meta.json")
+                .bufferedReader().use { it.readText() }
+            LandmarkLayout.modelVersion(JSONObject(raw), BuildConfig.CLASSIFIER_MODEL_VERSION)
+        } catch (_: Exception) {
+            BuildConfig.CLASSIFIER_MODEL_VERSION
+        }
+    }
     private var lastTranslatedSentence = ""
     private var lastFrameTimeMs        = 0L
     private val fpsSamples             = ArrayDeque<Float>(30)
@@ -104,13 +118,17 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         storedConfig = configStore.load()
         _state.update {
             it.copy(
-                translationMode = storedConfig.mode,
+                pipelineMode    = storedConfig.pipelineMode,
                 remoteUrl       = storedConfig.remoteUrl,
                 remoteHasToken  = storedConfig.remoteToken.isNotBlank(),
+                lastM3Status    = if (storedConfig.pipelineMode == "p2") "starting" else "off",
             )
         }
         PerfTrace.begin("", "app_start")
-        viewModelScope.launch(Dispatchers.IO) { gloss2Text.initialize() }
+        // P2 deliberately does not load the 2.58 GB Gemma model: M5 is remote.
+        if (storedConfig.pipelineMode != "p2") {
+            viewModelScope.launch(Dispatchers.IO) { gloss2Text.initialize() }
+        }
         viewModelScope.launch(Dispatchers.IO) {
             _state.update { it.copy(history = loadHistory()) }
         }
@@ -129,8 +147,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         if (imgW > 0 && imgH > 0 && (_state.value.cameraWidth != imgW || _state.value.cameraHeight != imgH)) {
             _state.update { it.copy(cameraWidth = imgW, cameraHeight = imgH) }
         }
-        val enqueuedNs = PerfTrace.now()
-        pipelineScope.launch { processFrame(handResult, faceResult, timestampMs, perf, enqueuedNs) }
+        pipelineScope.launch { processFrame(handResult, faceResult, timestampMs, perf) }
     }
 
     fun beginPerfTrial(expected: String) {
@@ -150,6 +167,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         val submittedNs = PerfTrace.now()
         val submittedTrial = PerfTrace.current
         pipelineScope.launch {
+            controller?.suppressBefore(controller?.lastWindowId() ?: -1L)
             val glosses = glossBuffer.currentGlosses().also { glossBuffer.clear() }
             if (glosses.isEmpty()) return@launch
             startTranslation(glosses, "manual", submittedNs, submittedTrial)
@@ -163,16 +181,46 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     fun setStyle(style: String) { _state.update { it.copy(style = style) } }
 
-    fun toggleTranslationMode() {
-        setTranslationMode(if (_state.value.translationMode == "remote") "local" else "remote")
-    }
-
-    fun setTranslationMode(mode: String) {
-        val normalized = if (mode == "remote") "remote" else "local"
-        storedConfig = storedConfig.copy(mode = normalized)
-        configStore.saveMode(normalized)
-        _state.update { it.copy(translationMode = normalized) }
-        PerfTrace.event("translation_mode", PerfTrace.current, "mode" to normalized)
+    fun setPipelineMode(mode: String) {
+        val normalized = when (mode) {
+            "p0", "local"  -> "p0"
+            "p1", "remote" -> "p1"
+            "p2"           -> "p2"
+            else           -> "p0"
+        }
+        if (normalized == _state.value.pipelineMode) return
+        storedConfig = storedConfig.copy(pipelineMode = normalized)
+        configStore.savePipelineMode(normalized)
+        sessionEpoch.incrementAndGet()
+        controller?.invalidate()
+        if (normalized == "p2") gloss2Text.close()
+        _state.update {
+            it.copy(
+                pipelineMode = normalized,
+                lastM3Status = if (normalized == "p2") "starting" else "off",
+            )
+        }
+        PerfTrace.event("pipeline_mode", PerfTrace.current, "mode" to normalized)
+        pipelineScope.launch {
+            controller?.close()
+            controller = null
+            controllerMode = null
+            glossBuffer.clear()
+            lastStableLabel = ""
+            currentSign = ""
+            currentConf = 0f
+            currentTop3 = emptyList()
+            lastRecognitionSerial = -1L
+            lastWordRecordedIndex = -1
+            ensureController(normalized)
+            _state.update {
+                it.copy(
+                    currentSign = "", currentConf = 0f, top3 = emptyList(),
+                    pendingGlosses = emptyList(),
+                    lastM3Status = if (normalized == "p2") "ready" else "off",
+                )
+            }
+        }
     }
 
     /** Saves the remote endpoint. Pass a blank token to keep the existing one. */
@@ -190,6 +238,37 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     fun remoteSettingsForDialog(): Pair<String, Boolean> =
         storedConfig.remoteUrl to storedConfig.remoteToken.isNotBlank()
+
+    /** Pipeline-thread only. Creates the controller matching the current mode. */
+    private fun ensureController(mode: String): RecognitionController {
+        val existing = controller
+        if (existing != null && controllerMode == mode) return existing
+        existing?.close()
+        val created: RecognitionController = when (mode) {
+            "p2" -> RemoteRecognitionController(
+                configProvider = {
+                    RemoteRecognitionConfig(
+                        baseUrl = storedConfig.remoteUrl,
+                        token = storedConfig.remoteToken,
+                        modelVersion = classifierVersion,
+                    )
+                },
+                sessionId = appSessionId,
+                deliver = { event, ctx ->
+                    pipelineScope.launch { handleRecognition(event, ctx) }
+                },
+                onStatus = { status ->
+                    _state.update { it.copy(lastM3Status = status) }
+                },
+            )
+            else -> LocalRecognitionController(getApplication()) { event, ctx ->
+                handleRecognition(event, ctx)
+            }
+        }
+        controller = created
+        controllerMode = mode
+        return created
+    }
 
     /** Démarre / arrête l'écoute de la personne entendante. Appelé depuis le main thread. */
     fun toggleListening() {
@@ -214,8 +293,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     fun clearBuffer() {
         // Invalidate any in-flight sentence: its response belongs to an older session.
         sessionEpoch.incrementAndGet()
+        controller?.invalidate()
         pipelineScope.launch {
-            signRecognizer.clearBuffer()
+            controller?.clear()
             glossBuffer.clear()
             lastStableLabel        = ""
             lastTranslatedSentence = ""
@@ -223,6 +303,11 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             lastFrameTimeMs        = 0L
             fpsSamples.clear()
             frameCount             = 0
+            currentSign            = ""
+            currentConf            = 0f
+            currentTop3            = emptyList()
+            lastRecognitionSerial  = -1L
+            lastWordRecordedIndex  = -1
             _state.update {
                 it.copy(
                     currentSign = "", currentConf = 0f, top3 = emptyList(),
@@ -230,6 +315,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     isTranslating = false, lastSource = "", lastStatus = "",
                     handDetected = false, fps = 0f,
                     detectedHands = emptyList(), faceDots = emptyList(),
+                    lastM3Status = if (it.pipelineMode == "p2") "ready" else "off",
                 )
             }
         }
@@ -242,7 +328,6 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         faceResult: FaceLandmarkerResult?,
         timestampMs: Long,
         perf: PerfFrame,
-        enqueuedNs: Long,
     ) {
         val processingNs = PerfTrace.now()
         val now = System.currentTimeMillis()
@@ -254,14 +339,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         val avgFps = if (fpsSamples.isNotEmpty()) fpsSamples.average().toFloat() else 0f
         frameCount++
 
-        val rec         = signRecognizer.processFrame(handResult, faceResult, timestampMs)
-        val hasHand     = rec.hasHand
-        val currentSign = rec.topLabel
-        val currentConf = rec.topConf
+        val hasHand = HolisticAssembler.hasHand(handResult)
         if (BuildConfig.TIMING_ENABLED && hasHand && perf.episodeId != perfLastEpisode) {
             perfLastEpisode = perf.episodeId
             perfWordOrdinal++
-            perfWordRecorded = false
             perfWordEnded = false
             PerfTrace.event("word_started", perf.trial,
                 "sentence_id" to perfSentenceSeq, "word_index" to perfWordOrdinal,
@@ -274,41 +355,25 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 "sentence_id" to perfSentenceSeq, "word_index" to perfWordOrdinal,
                 "episode_id" to perf.episodeId, "removed_ns" to perf.observedNs.toString())
         }
-        if (rec.inferenceSerial != perfLastInference) {
-            perfLastInference = rec.inferenceSerial
-            if (currentSign.isNotEmpty()) {
-                PerfTrace.event("recognition_result", perf.trial,
-                    "frame_id" to perf.frameId, "label" to currentSign,
-                    "sentence_id" to perfSentenceSeq, "word_index" to perfWordOrdinal,
-                    "episode_id" to perf.episodeId,
-                    "confidence" to currentConf, "accepted_threshold" to (currentConf >= 0.5f),
-                    "frame_observed_ns" to perf.observedNs.toString(),
-                    "pipeline_queue_ms" to (processingNs - enqueuedNs) / 1e6,
-                    "classification_call_ms" to (PerfTrace.now() - processingNs) / 1e6)
-                if (hasHand && currentConf >= 0.5f && !perfWordRecorded && perfWordOrdinal > 0) {
-                    perfWordRecorded = true
-                    PerfTrace.event("word_recognized", perf.trial,
-                        "sentence_id" to perfSentenceSeq, "word_index" to perfWordOrdinal,
-                        "episode_id" to perf.episodeId, "label" to currentSign,
-                        "confidence" to currentConf)
-                }
-            }
-        }
 
-        // Seuil 50% : on n'accepte un nouveau signe que s'il est suffisamment confiant.
-        if (currentSign.isNotEmpty() && currentConf >= 0.5f && currentSign != lastStableLabel) {
-            if (lastStableLabel.isNotEmpty()) glossBuffer.push(lastStableLabel)
-            lastStableLabel = currentSign
-        } else if (currentSign.isEmpty() && lastStableLabel.isNotEmpty()) {
-            glossBuffer.push(lastStableLabel)
-            lastStableLabel = ""
-        }
+        val ctl = ensureController(_state.value.pipelineMode)
+        val ctx = RecognitionContext(
+            perf = perf,
+            trial = perf.trial,
+            sentenceId = perfSentenceSeq,
+            wordIndex = perfWordOrdinal,
+            submittedNs = processingNs,
+            windowEndObservedNs = perf.observedNs,
+            recognitionEpoch = ctl.currentEpoch(),
+        )
+        val frame = ctl.processFrame(handResult, faceResult, timestampMs, ctx)
 
         // Mise à jour du timer "main visible".
         if (hasHand) {
             lastHandSeenMs = now
         } else if (lastHandSeenMs > 0L && now - lastHandSeenMs >= 3_000L) {
             // Aucune main depuis 3 s → envoyer à Gemma si des mots sont en attente.
+            ctl.endUtterance()
             val glosses = glossBuffer.currentGlosses()
             if (glosses.isNotEmpty()) {
                 glossBuffer.clear()
@@ -324,13 +389,88 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             it.copy(
                 currentSign    = currentSign,
                 currentConf    = currentConf,
-                top3           = rec.top3,
+                top3           = currentTop3,
                 pendingGlosses = glossBuffer.currentGlosses(),
                 handDetected   = hasHand,
                 fps            = avgFps,
-                detectedHands  = rec.detectedHands,
-                faceDots       = rec.faceDots,
+                detectedHands  = frame.detectedHands,
+                faceDots       = frame.faceDots,
             )
+        }
+    }
+
+    /**
+     * M3 -> M4: shared by local inference (called synchronously on the pipeline
+     * thread) and remote responses (posted to the pipeline dispatcher).
+     */
+    private fun handleRecognition(event: RecognitionEvent, ctx: RecognitionContext) {
+        if (!event.inferred) {
+            _state.update { it.copy(lastM3Status = event.status) }
+            return
+        }
+        if (event.topLabel.isNotEmpty()) {
+            if (event.resultSerial == lastRecognitionSerial) return
+            lastRecognitionSerial = event.resultSerial
+        }
+
+        currentSign = event.topLabel
+        currentConf = event.topConf
+        currentTop3 = event.top3
+
+        if (BuildConfig.TIMING_ENABLED && currentSign.isNotEmpty()) {
+            val callMs = if (event.source == "remote") {
+                event.clientMs
+            } else {
+                (PerfTrace.now() - ctx.submittedNs) / 1e6
+            }
+            PerfTrace.event("recognition_result", ctx.trial,
+                "frame_id" to ctx.perf.frameId, "label" to currentSign,
+                "sentence_id" to ctx.sentenceId, "word_index" to ctx.wordIndex,
+                "episode_id" to ctx.perf.episodeId,
+                "confidence" to currentConf, "accepted_threshold" to (currentConf >= 0.5f),
+                "source" to event.source, "window_id" to event.windowId,
+                "frame_observed_ns" to ctx.windowEndObservedNs.toString(),
+                "pipeline_queue_ms" to ((ctx.submittedNs - ctx.perf.observedNs) / 1e6),
+                "classification_call_ms" to callMs)
+            if (event.hasHand && currentConf >= 0.5f &&
+                ctx.wordIndex > 0 && ctx.wordIndex != lastWordRecordedIndex
+            ) {
+                lastWordRecordedIndex = ctx.wordIndex
+                PerfTrace.event("word_recognized", ctx.trial,
+                    "sentence_id" to ctx.sentenceId, "word_index" to ctx.wordIndex,
+                    "episode_id" to ctx.perf.episodeId, "label" to currentSign,
+                    "confidence" to currentConf, "source" to event.source)
+            }
+        }
+
+        // Seuil 50% : on n'accepte un nouveau signe que s'il est suffisamment confiant.
+        if (currentSign.isNotEmpty() && currentConf >= 0.5f && currentSign != lastStableLabel) {
+            if (lastStableLabel.isNotEmpty()) glossBuffer.push(lastStableLabel)
+            lastStableLabel = currentSign
+        } else if (currentSign.isEmpty() && lastStableLabel.isNotEmpty()) {
+            glossBuffer.push(lastStableLabel)
+            lastStableLabel = ""
+        }
+
+        if (event.source == "remote") {
+            _state.update {
+                it.copy(
+                    currentSign = currentSign,
+                    currentConf = currentConf,
+                    top3 = currentTop3,
+                    pendingGlosses = glossBuffer.currentGlosses(),
+                    lastM3Status = event.status,
+                )
+            }
+        } else {
+            _state.update {
+                it.copy(
+                    currentSign = currentSign,
+                    currentConf = currentConf,
+                    top3 = currentTop3,
+                    pendingGlosses = glossBuffer.currentGlosses(),
+                )
+            }
         }
     }
 
@@ -348,7 +488,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             "trigger" to trigger, "submitted_ns" to submittedNs.toString(),
             "glosses" to glosses.joinToString(" "))
         val style = _state.value.style
-        val mode = _state.value.translationMode
+        val mode = _state.value.pipelineMode
         val epochAtSubmit = sessionEpoch.get()
         val sessionId = "$appSessionId-$epochAtSubmit"
 
@@ -420,23 +560,32 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         mode: String, glosses: List<String>, style: String,
         trial: PerfTrial, requestId: String, sessionId: String, sentenceIndex: Long,
     ): TranslationResult {
-        if (mode == "remote") {
-            val remote = RemoteGlossToText(
-                RemoteConfig(
-                    url          = storedConfig.remoteUrl,
-                    token        = storedConfig.remoteToken,
-                    modelVersion = BuildConfig.REMOTE_MODEL_VERSION,
-                )
+        if (mode == "p0") {
+            return localGlossToText.translate(
+                glosses, style, trial, requestId, sessionId, sentenceIndex
             )
-            val remoteResult = remote.translate(glosses, style, trial, requestId, sessionId, sentenceIndex)
-            if (!remoteResult.isRemoteFailure) return remoteResult
-
-            PerfTrace.event("remote_fallback", trial, "request_id" to requestId,
-                "reason" to remoteResult.status, "error" to (remoteResult.error ?: ""))
-            val local = localGlossToText.translate(glosses, style, trial, requestId, sessionId, sentenceIndex)
-            return local.copy(source = "local_fallback")
         }
-        return localGlossToText.translate(glosses, style, trial, requestId, sessionId, sentenceIndex)
+
+        val remote = RemoteGlossToText(
+            RemoteConfig(
+                url          = storedConfig.remoteUrl,
+                token        = storedConfig.remoteToken,
+                modelVersion = BuildConfig.REMOTE_MODEL_VERSION,
+            )
+        )
+        val remoteResult = remote.translate(glosses, style, trial, requestId, sessionId, sentenceIndex)
+        if (!remoteResult.isRemoteFailure) return remoteResult
+
+        // P2 deliberately does not load the 2.58 GB local Gemma model, so there
+        // is no local fallback: the existing raw-gloss branch is shown instead.
+        if (mode == "p2") return remoteResult
+
+        PerfTrace.event("remote_fallback", trial, "request_id" to requestId,
+            "reason" to remoteResult.status, "error" to (remoteResult.error ?: ""))
+        val local = localGlossToText.translate(
+            glosses, style, trial, requestId, sessionId, sentenceIndex
+        )
+        return local.copy(source = "local_fallback")
     }
 
     // ── History persistence ───────────────────────────────────────────────────
@@ -476,8 +625,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     override fun onCleared() {
         super.onCleared()
+        controller?.close()
+        controller = null
         pipelineExecutor.shutdown()
-        signRecognizer.close()
         tts.shutdown()
         gloss2Text.close()
         speechEngine.destroy()

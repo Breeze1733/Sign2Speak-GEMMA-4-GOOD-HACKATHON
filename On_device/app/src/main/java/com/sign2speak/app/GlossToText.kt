@@ -91,10 +91,17 @@ data class RemoteConfig(
 ) {
     val isUsable: Boolean get() = url.isNotBlank()
 
-    fun endpoint(): String {
+    /** Accepts a base URL or a full /translate or /recognize URL. */
+    fun baseUrl(): String {
         val trimmed = url.trim().trimEnd('/')
-        return if (trimmed.endsWith("/translate")) trimmed else "$trimmed/translate"
+        return when {
+            trimmed.endsWith("/translate") -> trimmed.removeSuffix("/translate").trimEnd('/')
+            trimmed.endsWith("/recognize") -> trimmed.removeSuffix("/recognize").trimEnd('/')
+            else -> trimmed
+        }
     }
+
+    fun endpoint(): String = "${baseUrl()}/translate"
 }
 
 class RemoteGlossToText(private val config: RemoteConfig) : GlossToText {

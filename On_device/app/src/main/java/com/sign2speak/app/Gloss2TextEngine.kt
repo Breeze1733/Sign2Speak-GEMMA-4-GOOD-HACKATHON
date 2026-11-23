@@ -166,5 +166,6 @@ Examples of semantic inference with our current 50-sign vocabulary:
     fun close() {
         try { engine?.close() } catch (_: Exception) {}
         engine = null
+        isInitialized = false
     }
 }
